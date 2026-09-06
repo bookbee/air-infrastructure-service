@@ -1,0 +1,37 @@
+# Lint configuration for CI and for anyone with golangci-lint installed.
+# `make lint` falls back to gofmt + staticcheck when it is not, so the check
+# gate works on a clean machine with only the Go toolchain.
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - revive
+    - gosec
+    - misspell
+    - bodyclose
+    - errorlint
+    - nilerr
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          # Every exported symbol carries a doc comment; this is a library other
+          # teams read as much as run.
+          severity: warning
+
+  exclusions:
+    rules:
+      # Tests assert on behaviour, not on the error of every teardown call, and
+      # hardcoded local-dev credentials in fixtures are the point.
+      - path: _test\.go
+        linters: [errcheck, gosec]
+
+formatters:
+  enable:
+    - gofmt

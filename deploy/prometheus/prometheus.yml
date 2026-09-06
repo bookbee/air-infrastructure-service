@@ -1,0 +1,32 @@
+# Platform-wide scrape config. One Prometheus for every AIR service, so their
+# metrics can be correlated in one place — services expose /metrics and add a
+# job here rather than shipping a Prometheus each.
+#
+# Targets use `host.docker.internal:<host port>` rather than the compose service
+# name on purpose: a service is scraped identically whether it is running as a
+# container with its port published, or natively via its own `make run` during
+# the inner dev loop. A service-name target would break the moment a developer
+# moved to the native loop, which is the common case.
+#
+# The port is the service's slot in the AIR port map (README.md). A new service
+# adds its row there and its job here in the same commit.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # This service is always containerised and on this network, so it is the one
+  # target addressed by service name.
+  - job_name: air-infrastructure-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["air-infrastructure-service:8080"]
+        labels:
+          service: air-infrastructure-service
+
+  - job_name: air-classifier
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8082"]
+        labels:
+          service: air-classifier

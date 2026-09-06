@@ -1,0 +1,202 @@
+# air-infrastructure-service local stack — the shared dependencies every AIR
+# service dev-time resolves against. Sibling repos do not run their own copies
+# of these; they join the `air-net` network declared at the bottom of this file.
+#
+#   base:                    redis, postgres, pgbouncer, mongo,
+#                            air-infrastructure-service
+#   --profile tools:         adminer, mongo-express, redisinsight
+#   --profile observability: prometheus, grafana
+#
+# The network keeps the name `air-net`: it is the platform's network, not this
+# service's, and four sibling repos declare it `external: true`. Renaming it
+# would break every one of them.
+#
+# Image tags are pinned. This file is the single definition of the shared
+# stack, so a floating `:latest` here would silently change the runtime that
+# every other service's local behaviour was tuned against.
+name: air-infrastructure-service
+
+x-restart: &restart
+  restart: unless-stopped
+
+# Reaches the developer's laptop from inside a container. Required on Linux,
+# where host-gateway resolves to the docker0 bridge; Docker Desktop provides the
+# name natively and ignores the mapping. Used by anything that may be pointed at
+# a natively-run service, e.g. prometheus scraping a natively-run `make run`
+# service.
+x-host-access: &host-access
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  # The control plane (registry, credential broker, policy, admin) that hands
+  # out scoped store access to every AIR service.
+  air-infrastructure-service:
+    <<: *restart
+    build: .
+    # Pinned explicitly, as every other AIR service does. Without it compose
+    # derives `<project>-<service>`, which doubles the name to
+    # `air-infrastructure-service-air-infrastructure-service`. The `local` tag
+    # says "built from this checkout", so it cannot be confused with anything
+    # pulled from a registry.
+    image: air-infrastructure-service:local
+    env_file:
+      # Optional: the image is configured entirely through the environment, so a
+      # fresh checkout comes up without anyone running `make env` first.
+      - path: .env
+        required: false
+    environment:
+      AIR_INFRASTRUCTURE_SERVICE__ENVIRONMENT: local
+    ports: ["8080:8080"]
+    # These conditions order the local start-up; they are not a runtime dependency.
+    # A store going down later does not take this container with it — the broker
+    # keeps issuing credentials and /v1/ready reports the store red without leaving
+    # the rotation.
+    depends_on:
+      redis: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+      mongo: { condition: service_healthy }
+
+  redis:
+    <<: *restart
+    image: redis:7-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./deploy/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "localdevpass", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    <<: *restart
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: air
+      POSTGRES_PASSWORD: localdevpass
+      POSTGRES_DB: air
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U air -d air"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  pgbouncer:
+    <<: *restart
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_HOST: postgres
+      DB_USER: air
+      DB_PASSWORD: localdevpass
+      DB_NAME: air
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      # The image listens on 5432 by default, which would collide with the
+      # postgres service's own port on this same network. Every consumer
+      # (the registry's postgres endpoint, .env, this file's port publish)
+      # assumes pgbouncer itself speaks 6432, so it must actually listen there.
+      LISTEN_PORT: 6432
+    ports: ["6432:6432"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  mongo:
+    <<: *restart
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: air
+      MONGO_INITDB_ROOT_PASSWORD: localdevpass
+      MONGO_INITDB_DATABASE: air
+    volumes:
+      - ./deploy/mongo/init.js:/docker-entrypoint-initdb.d/init.js:ro
+      - mongo-data:/data/db
+    ports: ["27017:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---- dev UIs (profile: tools) --------------------------------------------
+  # Bound to 809x, not 808x: the 8080-8089 block is reserved for AIR services
+  # (see the port map in README.md) and a dev UI must never squat on one.
+  # Left on :latest — these are throwaway inspection UIs whose version cannot
+  # change how any service behaves.
+  adminer:
+    image: adminer:latest
+    profiles: ["tools"]
+    ports: ["8090:8080"]
+    depends_on: [postgres]
+
+  mongo-express:
+    image: mongo-express:latest
+    profiles: ["tools"]
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://air:localdevpass@mongo:27017
+      ME_CONFIG_BASICAUTH: "false"
+    ports: ["8091:8081"]
+    depends_on: [mongo]
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    profiles: ["tools"]
+    ports: ["8092:5540"]
+    depends_on: [redis]
+
+  # ---- observability (profile: observability) ------------------------------
+  # Platform-wide, not per-service: one Prometheus scrapes every AIR service so
+  # there is a single place to correlate them. Services expose /metrics and
+  # register a scrape target in deploy/prometheus/prometheus.yml; they do not
+  # ship a Prometheus of their own.
+  prometheus:
+    <<: *host-access
+    image: prom/prometheus:v3.0.1
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: ["observability"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  redis-data:
+  pg-data:
+  mongo-data:
+  prometheus-data:
+  grafana-data:
+
+# The shared network, under a fixed name rather than the derived
+# `air-infrastructure-service_default`. Sibling services join it with these
+# three lines:
+#
+#   networks:
+#     default:
+#       name: air-net
+#       external: true
+#
+# which puts their containers on air-net as *their* default network, so
+# `redis`, `mongo`, `pgbouncer` and `air-infrastructure-service` resolve by name
+# with no per-service network wiring on either side.
+networks:
+  default:
+    name: air-net
