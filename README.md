@@ -120,7 +120,7 @@ join this stack.
 | 8084 | air-tools | |
 | 8085 | air-action | Not yet built |
 | 8086 | air-recommender | Not yet built |
-| 8087 | air-rag | |
+| 8087 | air-rag-service | |
 | 8088 | air-adapter | ECP adapter (Node) |
 | 8501 | air-client | Streamlit console |
 | 8090 / 8091 / 8092 | adminer / mongo-express / redisinsight | `make up-tools` |
