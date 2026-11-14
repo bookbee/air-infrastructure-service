@@ -131,12 +131,6 @@ A `redis-cli` quirk with the `redis://:password@host` form the grant returns
 `redis-cli`, use `-h redis -a localdevpass`, or the explicit
 `redis://default:localdevpass@redis:6379/0`.
 
-**`air-orchestrator-service` cannot reach the broker from its container.**
-Its compose file sets `INFRA__BASE_URL: http://gateway:8080`, and no service on
-`air-net` is named `gateway`. That is a bug in that repo — its host-side `.env`
-value (`http://localhost:8080`) is the one that works, and the container-side
-value should be `http://air-infrastructure-service:8080`.
-
 **Rate limits are not being applied.**
 Correct — they are not implemented. `rate_per_minute` in the policy document is
 currently inert. See [`overview.md`](overview.md) "Current Gaps".

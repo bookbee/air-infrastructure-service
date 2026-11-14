@@ -157,11 +157,3 @@ the exception. It runs its own stack on `air-model-gateway-net` and is reached o
 - **`docs/overview.md`** exists in every `air-*` repo with identical H2 headings, so
   `air-client` can walk the siblings and assemble one cross-project presentation. Keep
   this repo's headings byte-identical to the others.
-
-## Known platform inconsistency (do not silently "fix")
-
-`../air-orchestrator-service/docker-compose.yml` sets
-`AIR_ORCHESTRATOR_SERVICE__INFRA__BASE_URL: http://gateway:8080`, but no compose service on
-`air-net` is named `gateway` — this repo's is `air-infrastructure-service`. That
-container-side probe cannot be resolving. It is a bug in that repo: the fix belongs there
-(`http://air-infrastructure-service:8080`), not here. Report it; leave it.
