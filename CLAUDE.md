@@ -42,6 +42,11 @@ Both are covered by tests. Don't "fix" either without reading the reasoning.
   grants only, so a listing reflects what a service is *declared* to use even in a
   local default-allow environment.
 
+A third is a known gap, not a bug to tidy: **rate limiting is built but never called.**
+`Deps.EnforceRate` exists and nothing invokes it, so `rate_per_minute` is inert and
+`..._ratelimited_total` stays at zero. Wiring it in would start rejecting sibling traffic
+that is accepted today, so it is a team decision (`docs/overview.md` → "Current Gaps").
+
 ## Commands
 
 `make help` lists every target. `make check` (lint + vet + test) is the pre-"done" gate;
@@ -49,6 +54,45 @@ Both are covered by tests. Don't "fix" either without reading the reasoning.
 
 `make lint` falls back to gofmt + staticcheck when golangci-lint is absent, and looks in
 `GOPATH/bin` as well as `PATH`.
+
+- Single test: `go test ./internal/app -run TestReadyWhenStoresAreDown -v`
+- `make cover` uses `-coverpkg=./...` because the HTTP handlers (`internal/api/v1`) have
+  no tests of their own. They are tested end-to-end from `internal/app/app_test.go`.
+- `make run` runs natively against the compose stack's published ports. It overrides the
+  store addresses from `.env`, which use compose service names that don't resolve from
+  the host.
+- `.claude/settings.json` denies `git push`, `gh pr create`, `make nuke` and volume
+  deletion. Leave those to the user.
+
+## Architecture
+
+The wiring is easy to miss because it is spread across a few files:
+
+- **Boot** (`internal/app/app.go` `New`): settings → registry, policy, secret backend,
+  metrics → one `api.Deps`. A bad policy file or missing secret file fails here, at boot,
+  not on the first request. `Handler(deps)` is split out from `New` so tests can inject
+  their own `Deps`. `Deps.Probe` is a seam for store health, so readiness tests need no
+  live stores.
+- **Request path**: `api.Observe` (`internal/api/middleware.go`) wraps the *whole* mux,
+  so unmatched paths are also counted and logged. It sets the request ID, the
+  request-scoped logger, the metric and the access log. Routes are stdlib `ServeMux`
+  method patterns (`internal/api/v1/router.go`). Each one goes through `Deps.Handle`,
+  which turns a returned error (or a panic) into problem+json. The catch-all `/` serves
+  a JSON 404, not the mux's plain-text one.
+- **Credential issue**: `issueCredentials` → `Deps.RequirePrincipal` (X-API-Key) →
+  `broker.Issue` (registry lookup → `policy.Decide(..., connect)` → `SecretBackend.Get`).
+  The handler maps broker errors with `errors.Is`: `ErrResourceNotFound`→404,
+  `ErrPolicyDenied`→403, anything else→`dependency_unavailable`.
+- **Secret backends** (`internal/broker/secrets.go`): `env` is the real one, `file` is
+  implemented but has no config, and `vault` is a stub that always errors. Choose one
+  with `SECURITY__SECRET_BACKEND`.
+- **Config** (`internal/config`): env vars override the `.env` file, which is read by a
+  small in-repo parser (`dotenv.go`), not a library. Invalid enum values refuse to boot.
+
+**This is a Go port of an earlier Python service**, and its outward behaviour must match
+that service: 404 bodies, metric labels, request-ID shape, how tokens are parsed. Code
+comments that say "matching the Python" mark these parity constraints. They are not
+open to "cleaner" redesigns.
 
 ## Go conventions in this repo
 
@@ -68,8 +112,8 @@ Both are covered by tests. Don't "fix" either without reading the reasoning.
 
 ## Platform context
 
-Sibling repos live beside this one under `/Users/vikas/git/air-platform/` (opened together
-via `air-platform.code-workspace`). Each is an independent HTTP service; they call each
+Sibling repos sit next to this one, in `../` (opened together through
+`../air-platform.code-workspace`). Each is an independent HTTP service; they call each
 other over HTTP and are **never imported as packages**.
 
 This service is **local-only** and never deployed. In real environments DevOps provisions
@@ -96,7 +140,8 @@ networks:
 
 `external: true` is deliberate: a sibling started before this stack fails loudly
 ("network air-net not found") instead of booting healthy and timing out on every call.
-`air-llm` is the exception — its own stack on `air-llm-net`, reached over
+`air-model-gateway` (called `air-llm` in older docs, including this README's port map) is
+the exception. It runs its own stack on `air-model-gateway-net` and is reached over
 `host.docker.internal:8083`.
 
 ### Estate conventions worth matching
