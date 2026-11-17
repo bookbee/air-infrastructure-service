@@ -59,6 +59,9 @@ fi
 if [ "${SAMPLE:-}" = 1 ] && [ "$env" != kind ]; then
   set -- "$@" --set "image.repository=us-central1-docker.pkg.dev/sample/air/$service" \
     --set image.tag=sample --set secrets.gcp.project=sample
+  if [ "$service" = air-orchestrator-service ]; then
+    set -- "$@" --set gateway.hostname=air.sample.internal --set gateway.tls.secretName=sample-tls
+  fi
 fi
 [ -z "${IMAGE_REPOSITORY:-}" ] || set -- "$@" --set "image.repository=$IMAGE_REPOSITORY"
 [ -z "${IMAGE_DIGEST:-}" ] || set -- "$@" --set "image.digest=$IMAGE_DIGEST"

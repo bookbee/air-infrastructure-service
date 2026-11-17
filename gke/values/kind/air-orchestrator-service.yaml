@@ -24,6 +24,13 @@ secrets:
 env:
   AIR_ORCHESTRATOR_SERVICE__PROMPTS__PERSONA__BRAND_NAME: Brightcart
 
+# kind has no Gateway API and no Google load balancer: the front door can't be
+# rehearsed here. The smoke test reaches the service by port-forward instead.
+gateway:
+  enabled: false
+networkPolicy:
+  allowedCidrs: []
+
 resources:
   requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 128Mi}
   limits: {memory: 512Mi, ephemeral-storage: 256Mi}

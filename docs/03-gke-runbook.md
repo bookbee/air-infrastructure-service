@@ -32,7 +32,8 @@ what each service needs and what replaces the local stack. Read it once first.
 ```
                  GKE cluster (Autopilot, private nodes), one per environment
  ┌─────────────────────────────────────────────────────────────────────────┐
- │  your ingress (HTTPS, WAF, rate limits)                                 │
+ │  front door: internal Gateway (gke-l7-rilb), private IP, HTTPS,         │
+ │  Cloud Armor rate limit. Only the shop's backend calls it (5.6)         │
  │        │                                                                │
  │        ▼                                                                │
  │  ns air-orchestrator-service ── 1 pod, Recreate                         │
@@ -57,10 +58,12 @@ what each service needs and what replaces the local stack. Read it once first.
   environments can't share a project.
 - **One namespace per service**, named after the service. The Helm release, the
   Deployment, the Service and the service account carry the same name.
-- **In-cluster only.** No chart creates an Ingress. Services call each other at
+- **In-cluster, with one private front door.** Services call each other at
   `http://<service>.<service>.svc.cluster.local` with an API key in `X-API-Key`.
-  Exposing air-orchestrator-service to clients is your ingress decision
-  ([section 5.6](#56-ingress-for-the-orchestrator)).
+  The only way in from outside the cluster is the orchestrator's front door: an
+  *internal* load balancer with a private IP in the VPC, which only the shop's
+  backend calls. Nothing is on the public internet
+  ([section 5.6](#56-the-orchestrators-front-door)).
 - **Model servers are not part of this deployment.** The gateway calls them; it
   doesn't host them. Until they exist, the gateway's local rungs fail fast and chat
   falls over to cloud models, **but air-rag-service cannot work**: its embedding
@@ -95,10 +98,12 @@ In this repository:
 | `gke/terraform/modules/gke-platform/` | VPC, Cloud NAT, Autopilot cluster, Artifact Registry. Skipped with `create_platform = false` when a cluster already exists | |
 | `gke/terraform/modules/air-model-gateway/` | Memorystore, the gateway's secrets, one token secret per calling service, Workload Identity IAM | |
 | `gke/terraform/modules/air-service/` | One service's secrets and Workload Identity IAM | |
+| `gke/terraform/modules/internal-gateway/` | The orchestrator's front door: the proxy-only subnet, the private static IP, the Cloud Armor rate-limit policy | |
 | `gke/scripts/bootstrap-gateway-secrets.sh` | Issues the gateway's service tokens and loads provider keys; rotates tokens | First setup; rotations |
 | `gke/scripts/hash-key.sh` | Digest of a raw API key, for a service's key records | When issuing an API key |
 | `gke/scripts/release.sh` | The Helm arguments for a render or a deploy, in one place | Never directly: use `make` |
 | `gke/scripts/validate.sh`, `smoke-gateway.sh`, `smoke-services.sh` | Static validation and smoke tests | Through `make` |
+| `gke/scripts/check-front-door.sh`, `smoke-front-door.sh` | The front door's checks: on the rendered manifests (run by `make gke-validate`), and against the deployed load balancer | Through `make` |
 | `gke/kind/` | The laptop rehearsal: cluster definition, a TLS Redis, the up scripts | `make kind-up` |
 
 In each service's own repository:
@@ -118,6 +123,7 @@ The `make` targets, all run from this repository's root:
 | `make gke-render SERVICE=… DEPLOY_ENV=…` | Prints the manifests. `SAMPLE=1` fills the placeholders so you can read them before a project exists |
 | `make gke-deploy SERVICE=… DEPLOY_ENV=… KUBE_CONTEXT=… …` | `helm upgrade --install`, atomic, waits for the rollout |
 | `make gke-smoke SERVICE=… DEPLOY_ENV=… KUBE_CONTEXT=… …` | Smoke-tests the deployed service |
+| `make gke-smoke-front-door FRONT_DOOR_URL=… ORCHESTRATOR_CUSTOMER_KEY=…` | Smoke-tests the orchestrator's front door, from a machine inside the VPC |
 | `make kind-up`, `kind-test`, `kind-down` | The laptop rehearsal |
 
 ## 3. Prerequisites
@@ -300,26 +306,130 @@ Each service's `networkPolicy.allowedNamespaces` already lists its callers:
 | --- | --- |
 | air-model-gateway | air-classifier-service, air-orchestrator-service, air-rag-service (and the names of two callers that aren't deployed: air-web-console, air-tools) |
 | air-classifier-service, air-rag-service, air-tools-gateway | air-orchestrator-service |
-| air-orchestrator-service | **nobody yet**: see the next section |
+| air-orchestrator-service | No namespace. Only its front door, by IP range: the proxy-only subnet and Google's health-check ranges (`networkPolicy.allowedCidrs`, next section) |
 
-### 5.6 Ingress for the orchestrator
+### 5.6 The orchestrator's front door
 
-air-orchestrator-service is the only service clients reach from outside. No chart
-creates an Ingress, a Gateway or a certificate: that is the platform's choice. When
-you add one:
+**The decision:** only the shop's backend calls air-orchestrator-service, over a
+private address. Browsers and mobile apps never do; they talk to the backend, which
+signs a customer token and calls the orchestrator. So the front door is a GKE
+Gateway of class `gke-l7-rilb`: a **regional internal Application Load Balancer**
+with a private IP in the VPC, HTTPS, and a Cloud Armor rate limit. The requirements
+are in the orchestrator's spec, `air-orchestrator-service/docs/specs/0016-front-door/`
+(`REQ-FDR-…`).
 
-- Point it at `service/air-orchestrator-service`, port 80, in the
-  `air-orchestrator-service` namespace.
-- Admit its traffic in `gke/values/<env>/air-orchestrator-service.yaml`: add the
-  ingress controller's namespace to `networkPolicy.allowedNamespaces`, or, for a
-  Google Cloud load balancer with container-native load balancing, the Google
-  front-end ranges to `networkPolicy.allowedCidrs` (`35.191.0.0/16`,
-  `130.211.0.0/22`).
-- **Do not buffer responses.** Answers stream as Server-Sent Events
-  (`text/event-stream`); a buffering proxy delivers them in one piece at the end.
-- **Rate-limit here.** The orchestrator's own rate limit is configured but not
-  enforced (air-web-console bug OR-017).
-- Give it a timeout above the orchestrator's turn deadline (15 s by default).
+```
+ shop backend (same VPC and region, or a connected network)
+      │ HTTPS to <front-door-hostname> → private IP
+      ▼
+ Gateway (gke-l7-rilb) ── Cloud Armor: 300 requests / 60 s per client IP, then 429
+      │ HTTPRoute: only POST /v1/chat, /v1/query, /v1/sessions/…  (everything else 404)
+      ▼
+ service/air-orchestrator-service:80  (NetworkPolicy admits the proxy-only subnet
+                                       and the health-check ranges, nothing else)
+```
+
+What is built, and who owns what:
+
+| Piece | Where | Owner |
+| --- | --- | --- |
+| Gateway API on the cluster | `gke-platform` module (`gateway_api_config`), or `gcloud container clusters update <cluster> --gateway-api=standard` for a cluster Terraform doesn't manage | This repository |
+| Proxy-only subnet (`10.129.0.0/23`), private static IP, Cloud Armor policy | `internal-gateway` module, `module "front_door"` in each environment | This repository |
+| Gateway, HTTPRoute, health check, backend policy (timeout, draining, Cloud Armor, logging) | `gke/helm/air-service/templates/gateway.yaml`, switched on by `gateway.enabled` in the orchestrator's values | This repository |
+| The DNS name and the TLS certificate | Your private DNS zone and your certificate authority | **The platform team.** Not created here |
+
+**First-time setup** (UAT shown; prod is the same with `prod`):
+
+1. **Terraform.** If the VPC already has a proxy-only subnet in this region (one is
+   allowed per region and VPC, and any other internal load balancer there already
+   made one), set `create_proxy_only_subnet = false` and `proxy_only_cidr` to its
+   range in `terraform.tfvars`. If the cluster isn't Terraform's
+   (`create_platform = false`), also set `subnetwork_id`. Then apply, and read:
+
+   ```bash
+   terraform output front_door
+   # address          the private IP
+   # address_name     -> gateway.addressName
+   # security_policy  -> gateway.securityPolicy
+   # proxy_only_cidr  -> must be in networkPolicy.allowedCidrs
+   ```
+
+2. **DNS.** In a private Cloud DNS zone visible to the backend's network, add an A
+   record from the hostname you choose to `address`.
+
+3. **Certificate.** Get a certificate for that hostname from your CA. Either put it
+   in a Kubernetes Secret in the orchestrator's namespace:
+
+   ```bash
+   kubectl -n air-orchestrator-service create secret tls air-front-door-tls \
+     --cert=fullchain.pem --key=privkey.pem
+   ```
+
+   and set `gateway.tls.secretName`; or upload it as a regional SSL certificate
+   (`gcloud compute ssl-certificates create … --region <region>`) and set
+   `gateway.tls.preSharedCerts` instead. Exactly one of the two. Google-managed
+   certificates are not available for an internal regional load balancer; a
+   Certificate Manager certificate is, if you prefer it (not wired in the chart).
+   The backend must trust the CA that signed it.
+
+4. **Values.** In `gke/values/uat/air-orchestrator-service.yaml`, replace
+   `<front-door-hostname>` and `<front-door-tls-secret>`. Check `addressName`,
+   `securityPolicy` and `allowedCidrs` against step 1's output. The chart refuses to
+   render while a placeholder remains, while `publicPaths` is empty, or with both or
+   neither TLS option.
+
+5. **Deploy** the orchestrator as usual (section 6). The load balancer takes a few
+   minutes to program. Watch it:
+
+   ```bash
+   kubectl -n air-orchestrator-service get gateway,httproute
+   kubectl -n air-orchestrator-service describe gateway air-orchestrator-service   # Programmed=True
+   ```
+
+6. **Smoke-test from inside the network** (a VM in the VPC, or through the VPN; the
+   address is not reachable from anywhere else):
+
+   ```bash
+   make gke-smoke-front-door FRONT_DOOR_URL=https://<front-door-hostname> \
+     ORCHESTRATOR_CUSTOMER_KEY=<raw customer key> [CA_FILE=ca.pem] [RATE_BURST=400]
+   ```
+
+   It checks that a chat turn answers, `X-Request-ID` comes back, TLS holds, the
+   internal routes (`/v1/health`, `/v1/ready`, `/v1/capabilities`, `/metrics`,
+   `/docs`) are a 404, a streamed answer arrives in pieces rather than all at the
+   end, and, with `RATE_BURST`, that the limit answers 429. The burst spends that
+   minute's allowance for the machine you run it from.
+
+Rules that keep it working:
+
+- **Only the public routes.** The route forwards `POST /v1/chat`, `POST /v1/query`
+  and `/v1/sessions/…`. Health, readiness, capabilities, metrics and the docs stay
+  inside the cluster. When the orchestrator gains a public route, add it to the
+  spec's public set (its test fails until you do) and to `gateway.publicPaths`.
+- **Streaming is not buffered.** The load balancer passes Server-Sent Events
+  through; the service sets `X-Accel-Buffering: no` and `Cache-Control: no-cache`.
+  Don't put a buffering proxy in front of it.
+- **Timeout.** `gateway.timeoutSec` (60 s) is the whole response, stream included.
+  Keep it at least four times the turn deadline (15 s); `make gke-validate` checks.
+- **Rate limit.** 300 requests per 60 s per client IP, then 429
+  (`front_door_rate_limit_count` in Terraform). With one backend calling, that is
+  one budget for **all** its customers: size it to the backend's peak, or key it on
+  a header the backend sets (the `internal-gateway` module's
+  `rate_limit_enforce_on_key = "HTTP_HEADER"` and `rate_limit_header_name`, passed
+  in `module "front_door"`). The orchestrator's
+  own per-key limit is configured but not enforced (air-web-console bug OR-017), so
+  this is the only limit.
+- **Identity comes from the key, never from proxy headers.** `X-Forwarded-For` and
+  the like are ignored by the service (spec 0016, tested). Callers still need their
+  orchestrator API key and, for a customer, a signed customer token.
+- **Who can reach the address.** Clients in the same VPC and region, or a network
+  connected to it by VPN, Interconnect or peering. To call it from another region,
+  turn on global access (not configured).
+- **Logs.** The load balancer logs requests (sample rate 100%); it does not log
+  request headers, so `X-API-Key` doesn't reach the logs. Keep it that way.
+
+On kind, `gateway.enabled` is `false`: an internal load balancer needs GCP, so the
+front door is checked on its rendered manifests only until UAT.
 
 ## 6. Deploying a service
 
@@ -490,6 +600,14 @@ Verified on a laptop on 2026-11-17 (`make gke-validate`, `make kind-up`,
 - **Charts:** both lint. Every service's manifests for `uat`, `prod` and `kind` pass
   Kubernetes 1.33 and CRD schema validation (`SecretProviderClass`, `PodMonitoring`).
 - **Terraform:** both roots pass `fmt` and `validate` (Terraform 1.5.7).
+- **The orchestrator's front door, on its rendered manifests** (`check-front-door.sh`,
+  for `uat` and `prod`): the route forwards exactly the three public paths, the
+  health check is on `/v1/health`, the timeout is at least four turn deadlines, the
+  class is internal with an HTTPS listener, the NetworkPolicy admits the load
+  balancer's ranges, and the Cloud Armor policy is attached. The service's side
+  (proxy headers ignored, no CORS, every route public or internal) is tested in the
+  orchestrator's own `make check`. `smoke-front-door.sh` was tried against the
+  service directly (a port-forward), not against a load balancer.
 - **On kind, with the production values of all five services:**
   - every pod starts with a read-only root filesystem and its real start command;
   - secrets reach every service (files for the gateway, the wrapper for the others);
@@ -518,11 +636,14 @@ Not verifiable without a GCP project:
   that doesn't match the host it dials (section 5.3);
 - Managed Prometheus scraping;
 - Autopilot admission of the pod specs;
-- the deploy pipeline's Workload Identity Federation.
+- the deploy pipeline's Workload Identity Federation;
+- the front door itself: the load balancer programming, TLS, the rate limit's 429,
+  and unbuffered streaming through it (`make gke-smoke-front-door` in UAT,
+  section 5.6).
 
 Not built:
 
-- An ingress for the orchestrator (section 5.6).
+- The front door's DNS record and certificate (the platform team's, section 5.6).
 - Deploy pipelines for four of the five services.
 - Model servers in the cluster.
 - Dashboards.

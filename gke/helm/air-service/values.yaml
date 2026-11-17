@@ -91,6 +91,55 @@ service:
   type: ClusterIP
   port: 80
 
+# ---- front door (a service clients reach from outside the cluster) -----------
+# Off for every service but air-orchestrator-service. When on, the chart adds a
+# Gateway (GKE creates a load balancer from it), an HTTPRoute, a health-check
+# policy and a backend policy. The contract is the orchestrator's spec 0016;
+# docs/03-gke-runbook.md §5.6 is the procedure.
+gateway:
+  enabled: false
+  # gke-l7-rilb: a regional INTERNAL Application Load Balancer. Private address,
+  # reachable from the VPC (and from networks connected to it), never from the
+  # internet. Callers are the shop's backends.
+  className: gke-l7-rilb
+  # The name callers use, e.g. air.uat.internal.example. Empty accepts any host.
+  hostname: ""
+  # Name of the reserved private address (terraform output front_door.address_name).
+  # Empty lets GKE pick one, which changes if the Gateway is recreated.
+  addressName: ""
+  tls:
+    # true: one HTTPS listener on 443. false: one HTTP listener on 80, for a
+    # first private rehearsal only.
+    enabled: true
+    # One of the two. A Kubernetes TLS Secret in the release's namespace…
+    secretName: ""
+    # …or the name of a regional, self-managed SSL certificate in the project.
+    preSharedCerts: ""
+  # The only paths forwarded. Everything else is answered 404 by the load
+  # balancer. For air-orchestrator-service these are the public routes of its
+  # spec 0016 (REQ-FDR-001/002); gke/scripts/validate.sh checks they match.
+  publicPaths: []
+  # Seconds the load balancer waits for the whole response, streamed answers
+  # included. At least four times the service's turn deadline (REQ-FDR-010).
+  timeoutSec: 60
+  # Seconds requests in flight get to finish when a pod is removed.
+  drainingTimeoutSec: 30
+  # Name of the regional Cloud Armor policy that rate-limits callers
+  # (terraform output front_door.security_policy). Empty: no limit at all.
+  securityPolicy: ""
+  healthCheck:
+    path: /v1/health
+    checkIntervalSec: 10
+    timeoutSec: 3
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+  # Load balancer access logs. They hold the path, status, sizes and latency;
+  # request headers (X-API-Key, air-token) are not logged, and no optional
+  # header fields are added here (REQ-FDR-013).
+  logging:
+    enabled: true
+    sampleRate: 1000000
+
 # Ignored while autoscaling is enabled.
 replicaCount: 1
 

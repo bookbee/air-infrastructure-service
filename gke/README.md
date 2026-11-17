@@ -17,6 +17,7 @@ gke/
 ├── helm/
 │   ├── air-model-gateway/     the gateway's own chart (it mounts routing, pricing and policy files)
 │   └── air-service/           one shared chart for the other four services
+│                              (templates/gateway.yaml: the orchestrator's front door)
 ├── values/
 │   ├── uat/<service>.yaml     one file per service per environment
 │   ├── prod/<service>.yaml
@@ -26,14 +27,17 @@ gke/
 │   └── modules/
 │       ├── gke-platform/      VPC, NAT, Autopilot cluster, Artifact Registry (optional)
 │       ├── air-model-gateway/ Memorystore, the gateway's secrets and tokens, IAM
-│       └── air-service/       one service's secrets and IAM
+│       ├── air-service/       one service's secrets and IAM
+│       └── internal-gateway/  the orchestrator's front door: proxy-only subnet, private IP, Cloud Armor
 ├── scripts/
 │   ├── release.sh             the Helm arguments for a render or a deploy, in one place
 │   ├── validate.sh            make gke-validate
 │   ├── bootstrap-gateway-secrets.sh   issue and rotate the gateway's tokens; load provider keys
 │   ├── hash-key.sh            digest of a raw API key
 │   ├── smoke-gateway.sh, smoke_gateway.py   make gke-smoke SERVICE=air-model-gateway
-│   └── smoke-services.sh      make gke-smoke for the other four
+│   ├── smoke-services.sh      make gke-smoke for the other four
+│   ├── check-front-door.sh    the front door's checks on rendered manifests (run by validate.sh)
+│   └── smoke-front-door.sh    make gke-smoke-front-door, from inside the VPC
 └── kind/                      make kind-up: a local Kubernetes cluster with all five services
 ```
 
@@ -48,6 +52,7 @@ make kind-up && make kind-test                         # rehearse on a laptop
 make gke-deploy SERVICE=air-rag-service DEPLOY_ENV=uat KUBE_CONTEXT=… GCP_PROJECT=… \
      IMAGE_REPOSITORY=… IMAGE_DIGEST=sha256:…          # deploy
 make gke-smoke  SERVICE=air-rag-service DEPLOY_ENV=uat KUBE_CONTEXT=…
+make gke-smoke-front-door FRONT_DOOR_URL=https://… ORCHESTRATOR_CUSTOMER_KEY=…   # from inside the VPC
 ```
 
 Each service's own repository has `make image-push`, `make deploy` and

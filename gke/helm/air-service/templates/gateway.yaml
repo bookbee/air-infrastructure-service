@@ -1,0 +1,133 @@
+{{- if .Values.gateway.enabled }}
+# The service's front door: a GKE Gateway. With the default class this is an
+# internal Application Load Balancer, reachable on a private address only. Used
+# by air-orchestrator-service, the one service clients call from outside the
+# cluster; its spec 0016 is the contract these four resources implement.
+#
+# GKE creates the load balancer from them. gke/terraform (modules/
+# internal-gateway) creates what they refer to by name: the reserved address
+# and the Cloud Armor policy, plus the proxy-only subnet the load balancer needs.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "air.fullname" . }}
+  labels:
+    {{- include "air.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  listeners:
+    {{- if .Values.gateway.tls.enabled }}
+    # TLS ends here; the hop to the pods is plain HTTP inside the cluster.
+    - name: https
+      protocol: HTTPS
+      port: 443
+      {{- with .Values.gateway.hostname }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      tls:
+        mode: Terminate
+        {{- if .Values.gateway.tls.secretName }}
+        certificateRefs:
+          - kind: Secret
+            name: {{ .Values.gateway.tls.secretName }}
+        {{- else }}
+        options:
+          networking.gke.io/pre-shared-certs: {{ .Values.gateway.tls.preSharedCerts | quote }}
+        {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- else }}
+    - name: http
+      protocol: HTTP
+      port: 80
+      {{- with .Values.gateway.hostname }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+  {{- with .Values.gateway.addressName }}
+  addresses:
+    - type: NamedAddress
+      value: {{ . }}
+  {{- end }}
+---
+# Only the public paths are forwarded. Anything else (/metrics, /v1/ready,
+# /v1/capabilities, the API documentation) matches no rule: the load balancer
+# answers 404 itself and the request never reaches a pod.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "air.fullname" . }}
+  labels:
+    {{- include "air.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - kind: Gateway
+      name: {{ include "air.fullname" . }}
+  {{- with .Values.gateway.hostname }}
+  hostnames:
+    - {{ . | quote }}
+  {{- end }}
+  rules:
+    - matches:
+        {{- range .Values.gateway.publicPaths }}
+        - path:
+            type: {{ .type }}
+            value: {{ .value }}
+        {{- end }}
+      backendRefs:
+        - name: {{ include "air.fullname" . }}
+          port: {{ .Values.service.port }}
+---
+# Liveness, never readiness: a dependency outage must not take the service out
+# of rotation. The check goes straight to the container port.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ include "air.fullname" . }}
+  labels:
+    {{- include "air.labels" . | nindent 4 }}
+spec:
+  default:
+    checkIntervalSec: {{ .Values.gateway.healthCheck.checkIntervalSec }}
+    timeoutSec: {{ .Values.gateway.healthCheck.timeoutSec }}
+    healthyThreshold: {{ .Values.gateway.healthCheck.healthyThreshold }}
+    unhealthyThreshold: {{ .Values.gateway.healthCheck.unhealthyThreshold }}
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: {{ .Values.containerPort }}
+        requestPath: {{ .Values.gateway.healthCheck.path }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "air.fullname" . }}
+---
+# The response timeout covers a whole streamed answer, so it must be well above
+# the service's own deadline. Draining lets answers in flight finish when a pod
+# is replaced. The security policy is the rate limit.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "air.fullname" . }}
+  labels:
+    {{- include "air.labels" . | nindent 4 }}
+spec:
+  default:
+    timeoutSec: {{ .Values.gateway.timeoutSec }}
+    connectionDraining:
+      drainingTimeoutSec: {{ .Values.gateway.drainingTimeoutSec }}
+    {{- with .Values.gateway.securityPolicy }}
+    securityPolicy: {{ . }}
+    {{- end }}
+    logging:
+      enabled: {{ .Values.gateway.logging.enabled }}
+      sampleRate: {{ .Values.gateway.logging.sampleRate }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "air.fullname" . }}
+{{- end }}

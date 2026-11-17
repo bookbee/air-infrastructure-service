@@ -198,6 +198,10 @@ gke-smoke: gke-require-service ## Smoke-test SERVICE in KUBE_CONTEXT (gateway: t
 			EXPECT_CITATIONS="$(EXPECT_CITATIONS)" gke/scripts/smoke-services.sh; \
 	fi
 
+.PHONY: gke-smoke-front-door
+gke-smoke-front-door: ## Smoke-test the orchestrator's front door from a machine that can reach it (FRONT_DOOR_URL, ORCHESTRATOR_CUSTOMER_KEY; RATE_BURST optional)
+	@gke/scripts/smoke-front-door.sh
+
 .PHONY: kind-up
 kind-up: ## All five services on a local kind cluster, with the production charts and values
 	@GATEWAY_DIR="$(abspath $(GATEWAY_DIR))" gke/kind/up-gateway.sh

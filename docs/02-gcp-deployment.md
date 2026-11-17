@@ -67,10 +67,10 @@ service, nothing exposed except the orchestrator.
 
 ```mermaid
 flowchart TB
-    client(["Shop backend / customer app"])
+    client(["Shop backend<br/>(the only caller, inside the VPC)"])
 
     subgraph gcp["GCP project (one per environment)"]
-        lb["HTTPS load balancer + Cloud Armor<br/>(your ingress; TLS, WAF, rate limits)"]
+        lb["Front door: internal GKE Gateway (gke-l7-rilb)<br/>private IP, HTTPS, Cloud Armor rate limit"]
 
         subgraph gke["GKE Autopilot cluster, private nodes"]
             orch["ns air-orchestrator-service<br/>1 replica (see section 9)"]
@@ -110,7 +110,9 @@ flowchart TB
 ```
 
 - **Only air-orchestrator-service is reachable from outside the cluster**, and only
-  through your ingress. Every other service is `ClusterIP` only.
+  through its front door: an internal load balancer with a private IP, which only the
+  shop's backend calls (orchestrator spec 0016; runbook §5.6). Nothing is on the
+  public internet. Every other service is `ClusterIP` only.
 - **Only air-model-gateway needs internet egress.** The rest talk to in-cluster
   services and Memorystore.
 - **air-web-console is not deployed.** It is a local test tool. To test a deployed
@@ -357,10 +359,10 @@ repository; none is hidden.
 | **The RAG service keeps its index in memory and builds it at start-up** from `INGESTION__SEED_DIR`, embedding every document through the gateway. | Start-up time grows with the corpus; each replica builds its own copy; the gateway's embedding model must be up before the pod starts or the index is empty. No route adds documents at run time | air-rag-service README, `docs/00-plan.md` |
 | **The RAG index is tied to the embedding model `local-768-v1`,** which the gateway serves from a local model server (`nomic-embed-text` on Ollama). | The cluster needs a model server for embeddings even if all chat traffic uses cloud models. Changing the embedding model means re-indexing | Gateway `deploy/routing.yaml`; RAG `CLAUDE.md` |
 | **The tools gateway has only a fixture backend.** `BACKEND__MODE` accepts `fixture` and nothing else. | A deployed tools gateway serves sample orders from the image, and a restart resets them. Connecting real order systems is application work (an `OrdersBackend` implementation), not configuration | air-tools-gateway `docs/enhancements.md` |
-| **The orchestrator's rate limit is configured but not enforced.** | Put rate limiting at the ingress (Cloud Armor) until it is | air-web-console `bugs/orchestrator/OR-017-*.md` |
+| **The orchestrator's rate limit is configured but not enforced.** | The front door's Cloud Armor policy is the only limit until it is: one budget per client IP, and the backend is one client (runbook §5.6) | air-web-console `bugs/orchestrator/OR-017-*.md` |
 | **Redis over TLS: one open case.** | All three Redis users were run on kind against a TLS Redis with AUTH and CA verification, and work. Memorystore differs in one way: clients dial it by IP, so its certificate doesn't match the host. The gateway and the classifier can switch host-name checking off in the URL. **The tools gateway can't today** and may refuse the connection: test it in UAT; the fallback is one replica with the in-memory store | `gke/kind/redis-tls.yaml`; runbook §5.3 |
 | **The orchestrator always probes the credential broker.** It has no switch for it. | In GCP there is no broker, so `/v1/ready` permanently lists `air-infra` as `reachable: false`. Readiness is unaffected, but anyone reading that output should know it is expected | Orchestrator `config.py`, `InfraSettings` |
-| **No ingress is defined for the orchestrator.** | Clients can't reach the platform until you add one and admit it in the orchestrator's NetworkPolicy | Runbook §5.6 |
+| **The orchestrator's front door is built but unproved.** An internal Gateway can't run on kind, so it has been checked on its rendered manifests only. Its DNS name and certificate are the platform team's | Run `make gke-smoke-front-door` from inside the VPC in UAT before anything calls it. Clients must be in the same VPC and region, or a connected network | Runbook §5.6; orchestrator spec 0016 |
 | **The classifier's Tier 1 model is not in the default image.** | Without it most classifications escalate to a paid cloud call | Classifier README, "Image" |
 | **Three repositories have no CI pipeline** (orchestrator, classifier, RAG service), and four have no deploy pipeline. | `make check` is the intended gate in each; the gateway's `deploy.yml` is the template for a pipeline | Each repository's README |
 | **The classifier's `make check` is red on a clean checkout.** | A CI job built on it fails from day one until it is fixed | air-web-console `bugs/classifier/CL-010-*.md` |
@@ -377,11 +379,11 @@ repository; none is hidden.
       has a real failover. (On 2026-11-16 only Gemini answered.)
 - [ ] The `<placeholders>` in `gke/values/<env>/` filled, or passed on every deploy.
 - [ ] The tools gateway tested against Memorystore's TLS (section 9).
-- [ ] An ingress for the orchestrator, admitted in its NetworkPolicy.
+- [ ] The orchestrator's front door: proxy-only subnet decided (existing or new), DNS record and certificate issued, placeholders filled, `make gke-smoke-front-door` passing from inside the VPC.
 - [ ] Every development salt, key and token replaced. `APP__ENV=production` on every
       service that has the setting.
-- [ ] Orchestrator pinned to one replica; ingress with TLS, WAF and rate limiting in
-      front of it.
+- [ ] Orchestrator pinned to one replica; the front door's rate limit sized to the
+      backend's peak (`front_door_rate_limit_count`).
 - [ ] A real document set mounted for the RAG service, and `RETRIEVAL__MIN_SCORE`
       re-checked on it.
 - [ ] Classifier Tier 1 model baked in or mounted; `/v1/capabilities` does not report

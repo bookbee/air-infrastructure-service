@@ -5,8 +5,10 @@
 #   1. both charts lint,
 #   2. every service renders for uat, prod and kind, and every manifest passes
 #      its Kubernetes schema (kubeconform),
-#   3. Terraform is formatted and each environment validates,
-#   4. the shell scripts pass shellcheck.
+#   3. the orchestrator's front door meets the requirements of its spec 0016
+#      that a manifest can show (check-front-door.sh),
+#   4. Terraform is formatted and each environment validates,
+#   5. the shell scripts pass shellcheck.
 #
 # A render that fails is a failure here: the output is checked before it is
 # piped on, so an empty render can't pass as "0 resources, all valid".
@@ -45,6 +47,12 @@ for env in uat prod kind; do
       "$out" | tail -1) || { echo "  FAIL  $service $env: $summary"; exit 1; }
     printf '  ok    %-26s %-5s %s\n' "$service" "$env" "$(echo "$summary" | sed 's/^Summary: //; s/ in 1 file//')"
   done
+done
+
+echo "front door (air-orchestrator-service, orchestrator spec 0016)"
+for env in uat prod; do
+  echo "  $env"
+  "$gke/scripts/check-front-door.sh" "$tmp/air-orchestrator-service-$env.yaml"
 done
 
 echo "terraform"

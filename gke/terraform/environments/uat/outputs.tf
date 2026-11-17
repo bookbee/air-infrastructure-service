@@ -44,3 +44,13 @@ output "service_workload_principals" {
     air-orchestrator-service = module.orchestrator.workload_principal
   }
 }
+
+output "front_door" {
+  description = "For gke/values/<env>/air-orchestrator-service.yaml (gateway.addressName, gateway.securityPolicy, networkPolicy.allowedCidrs) and for the hostname's DNS record."
+  value = {
+    address         = module.front_door.address
+    address_name    = module.front_door.address_name
+    security_policy = module.front_door.security_policy
+    proxy_only_cidr = module.front_door.proxy_only_cidr
+  }
+}

@@ -71,6 +71,23 @@ air-platform/environment: {{ .Values.environment }}
 {{- if and (eq .Values.strategy "Recreate") .Values.autoscaling.enabled }}
 {{- fail "strategy=Recreate is for a service that must run as one copy; it cannot be combined with autoscaling" }}
 {{- end }}
+{{- if .Values.gateway.enabled }}
+{{- if not .Values.gateway.publicPaths }}
+{{- fail "gateway.publicPaths is empty: list the paths the front door may forward" }}
+{{- end }}
+{{- if and .Values.gateway.tls.enabled (not .Values.gateway.tls.secretName) (not .Values.gateway.tls.preSharedCerts) }}
+{{- fail "gateway.tls is enabled: set gateway.tls.secretName (a Kubernetes TLS Secret) or gateway.tls.preSharedCerts (a regional SSL certificate)" }}
+{{- end }}
+{{- if and .Values.gateway.tls.secretName .Values.gateway.tls.preSharedCerts }}
+{{- fail "set only one of gateway.tls.secretName and gateway.tls.preSharedCerts" }}
+{{- end }}
+{{- if contains "<" (printf "%s%s%s%s%s" .Values.gateway.hostname .Values.gateway.addressName .Values.gateway.securityPolicy .Values.gateway.tls.secretName .Values.gateway.tls.preSharedCerts) }}
+{{- fail "a gateway.* value still holds a <placeholder>: fill gke/values/<env>/<service>.yaml from `terraform output front_door`" }}
+{{- end }}
+{{- if ne .Values.gateway.healthCheck.path "/v1/health" }}
+{{- fail "gateway.healthCheck.path must be /v1/health: a readiness check would take the service out of rotation on a dependency outage" }}
+{{- end }}
+{{- end }}
 {{- if le (int .Values.terminationGracePeriodSeconds) (int .Values.preStopSleepSeconds) }}
 {{- fail "terminationGracePeriodSeconds must exceed preStopSleepSeconds" }}
 {{- end }}

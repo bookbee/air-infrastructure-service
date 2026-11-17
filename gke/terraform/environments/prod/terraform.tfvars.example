@@ -5,8 +5,14 @@ region     = "us-central1"
 # false if the platform team already runs the cluster; then set network_id.
 create_platform = true
 # network_id    = "projects/<project>/global/networks/<vpc>"
+# subnetwork_id = "projects/<project>/regions/<region>/subnetworks/<cluster-subnet>"
+# create_proxy_only_subnet = false   # if the VPC already has one in this region
+# proxy_only_cidr          = "10.129.0.0/23"
 
 # CIDRs allowed to reach the GKE control plane (CI runners, office VPN).
 master_authorized_networks = [
   # { cidr_block = "203.0.113.0/24", display_name = "vpn" },
 ]
+
+# air-orchestrator-service's front door: requests per minute per caller before 429.
+# front_door_rate_limit_count = 300

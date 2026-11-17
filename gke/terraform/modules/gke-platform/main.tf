@@ -109,6 +109,12 @@ resource "google_container_cluster" "this" {
     enabled = true
   }
 
+  # The Gateway API: air-orchestrator-service's front door is a Gateway
+  # (modules/internal-gateway, and gateway.* in its values file).
+  gateway_api_config {
+    channel = "CHANNEL_STANDARD"
+  }
+
   resource_labels = var.labels
   depends_on      = [google_project_service.apis]
 }

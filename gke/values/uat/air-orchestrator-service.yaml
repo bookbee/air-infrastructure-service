@@ -71,9 +71,39 @@ resources:
   requests: {cpu: 500m, memory: 512Mi, ephemeral-storage: 256Mi}
   limits: {memory: 512Mi, ephemeral-storage: 256Mi}
 
+# ---- the front door ----------------------------------------------------------
+# The one service clients reach from outside the cluster, through an internal
+# load balancer: the shop's backends only, on a private address. The contract
+# is this service's spec 0016; the procedure is docs/03-gke-runbook.md §5.6.
+gateway:
+  enabled: true
+  # The DNS name the backends call. Create its record pointing at
+  # `terraform output front_door` -> address.
+  hostname: <front-door-hostname>
+  # From `terraform output front_door`.
+  addressName: air-front-door-uat
+  securityPolicy: air-front-door-uat
+  tls:
+    # The certificate for the hostname above: a Kubernetes TLS Secret in the
+    # air-orchestrator-service namespace, or (preSharedCerts) a regional SSL
+    # certificate in the project.
+    secretName: <front-door-tls-secret>
+  # Exactly the service's public routes (spec 0016, REQ-FDR-001). /v1/health,
+  # /v1/ready, /v1/capabilities, /metrics and the API documentation stay inside.
+  publicPaths:
+    - {type: Exact, value: /v1/chat}
+    - {type: Exact, value: /v1/query}
+    - {type: PathPrefix, value: /v1/sessions}
+  # Four times the 15 s turn deadline (AIR_ORCHESTRATOR_SERVICE__TURN__DEADLINE_MS).
+  # Raise both together.
+  timeoutSec: 60
+
 networkPolicy:
-  # The only service clients reach from outside the cluster. Nothing is allowed
-  # in until the platform's ingress is decided: list the ingress controller's
-  # namespace, or the load balancer's source ranges, here.
+  # Nothing in the cluster calls this service. Its traffic comes from the load
+  # balancer: the proxy-only subnet (`terraform output front_door` ->
+  # proxy_only_cidr) and Google's health-check ranges.
   allowedNamespaces: []
-  # allowedCidrs: ["35.191.0.0/16", "130.211.0.0/22"]   # Google Cloud load balancers
+  allowedCidrs:
+    - 10.129.0.0/23
+    - 35.191.0.0/16
+    - 130.211.0.0/22

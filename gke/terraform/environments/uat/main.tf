@@ -95,3 +95,22 @@ module "orchestrator" {
   }
   gateway_token_secret_id = module.gateway.consumer_token_secret_ids["air-orchestrator-service"]
 }
+
+# ---- air-orchestrator-service's front door ------------------------------------
+# The private address, the proxy-only subnet and the rate-limit policy of the
+# internal load balancer that GKE creates from the orchestrator's Gateway
+# (orchestrator spec 0016; runbook §5.6).
+module "front_door" {
+  source = "../../modules/internal-gateway"
+
+  project_id    = var.project_id
+  region        = var.region
+  environment   = "uat"
+  network_id    = var.create_platform ? module.platform[0].network_id : var.network_id
+  subnetwork_id = var.create_platform ? module.platform[0].subnetwork_id : var.subnetwork_id
+
+  create_proxy_only_subnet = var.create_proxy_only_subnet
+  proxy_only_cidr          = var.proxy_only_cidr
+  rate_limit_count         = var.front_door_rate_limit_count
+  labels                   = local.labels
+}
