@@ -1,0 +1,69 @@
+# air-classifier-service, production on GKE. Layered on gke/helm/air-service/values.yaml.
+#
+# Placeholders in <angle brackets> come from `terraform output` in
+# gke/terraform/environments/prod, or are passed by `make gke-deploy`
+# (IMAGE_REPOSITORY, GCP_PROJECT). The image is set by CI or by
+# `make deploy DEPLOY_ENV=prod` in the air-classifier-service repository.
+#
+# Settings: every variable is documented in that repository's .env.example.
+# Only what must differ from its defaults is set here.
+
+environment: prod
+
+image:
+  repository: <region>-docker.pkg.dev/<project>/air/air-classifier-service
+
+containerPort: 8080
+# The image's user is uid 1001 (the other services use 10001).
+runAsUser: 1001
+runAsGroup: 1001
+command: [uvicorn, "air_classifier_service.main:create_app", --factory, --host, 0.0.0.0, --port, "8080", --proxy-headers]
+
+env:
+  AIR_CLASSIFIER__APP__ENV: production
+  AIR_CLASSIFIER__APP__DOCS_ENABLED: "false"
+  AIR_CLASSIFIER__OBS__LOG_FORMAT: json
+  AIR_CLASSIFIER__MODEL_GATEWAY__ENABLED: "true"
+  AIR_CLASSIFIER__MODEL_GATEWAY__BASE_URL: http://air-model-gateway.air-model-gateway.svc.cluster.local
+  # Shared verdict cache and idempotency. Required for more than one replica.
+  # The URL (with its AUTH string) is the secret AIR_CLASSIFIER__CACHE__REDIS_URL.
+  AIR_CLASSIFIER__CACHE__BACKEND: redis
+  AIR_CLASSIFIER__CACHE__KEY_PREFIX: "air:clf:"
+
+secrets:
+  mode: gcpSecretManager
+  gcp:
+    project: <project>
+    # Setting -> Secret Manager secret id. The same map is in
+    # gke/terraform/environments/<env>/main.tf, which creates the secrets.
+    items:
+      AIR_CLASSIFIER__SECURITY__HASH_SALT: air-classifier-service-hash-salt
+      AIR_CLASSIFIER__SECURITY__API_KEYS_INLINE: air-classifier-service-api-keys
+      AIR_CLASSIFIER__CACHE__REDIS_URL: air-classifier-service-redis-url
+      AIR_CLASSIFIER__MODEL_GATEWAY__TOKEN: air-classifier-service-model-gateway-token
+
+# The Tier 1 model is not in the default image. Without it Tier 1 runs on a
+# weaker fallback and most requests climb to paid tiers. Either build the image
+# with the MODEL_URL / TOKENIZER_URL build arguments, or mount model.onnx and
+# tokenizer.json at /opt/models, for example from a PersistentVolumeClaim:
+# extraVolumes:
+#   - name: models
+#     persistentVolumeClaim: {claimName: air-classifier-models}
+# extraVolumeMounts:
+#   - {name: models, mountPath: /opt/models, readOnly: true}
+
+resources:
+  requests: {cpu: 500m, memory: 1Gi, ephemeral-storage: 256Mi}
+  limits: {memory: 1Gi, ephemeral-storage: 256Mi}
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+
+podDisruptionBudget:
+  enabled: true
+
+networkPolicy:
+  allowedNamespaces:
+    - air-orchestrator-service

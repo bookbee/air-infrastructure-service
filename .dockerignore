@@ -6,3 +6,4 @@ coverage.out
 .claude
 docs
 *.md
+gke

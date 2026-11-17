@@ -9,6 +9,17 @@ policy-checked credentials for Redis, Postgres and Mongo, plus the docker-compos
 that hosts them for the whole estate. It is **local-only** and never deployed — in real
 environments DevOps provisions those stores directly.
 
+The repository also holds, in `gke/`, **the cloud deployment code for the five core
+services** (two Helm charts, values per service per environment, Terraform, scripts, a
+kind rehearsal). That code has nothing to do with the Go service: it is here because
+DevOps owns this repository and wants one place to deploy from. `gke/README.md` is the
+map and `docs/03-gke-runbook.md` the procedure. `make gke-validate` is its gate, and
+`make kind-up kind-test` its runtime proof; run both after changing anything under
+`gke/`. Each core repository's `make deploy` calls back into `make gke-deploy` here,
+so the target names and their variables (`SERVICE`, `DEPLOY_ENV`, `KUBE_CONTEXT`,
+`IMAGE_REPOSITORY`, `IMAGE_DIGEST`, `IMAGE_TAG`, `GCP_PROJECT`, `GATEWAY_DIR`,
+`KEYS_FILE`) are a contract with five other Makefiles.
+
 DevOps owns this repo. The audience for every README, Makefile target and comment is an
 operator, not the author.
 
@@ -118,9 +129,15 @@ other over HTTP and are **never imported as packages**.
 
 This service is **local-only** and never deployed. In real environments DevOps provisions
 Redis/Postgres/Mongo/observability directly. Keep that property — it is why the compose
-file, not the binary, is most of the product.
+file, not the binary, is most of the local product. (`gke/` deploys the *other* services;
+it has no chart for this one, on purpose.)
 
 ### Port map
+
+`docs/02-gcp-deployment.md` is the DevOps guide to what replaces this stack in GCP
+and how each AIR service's image is built and deployed. It describes the other
+repositories, so update it when a service's port, settings prefix, dependencies or
+scaling constraints change.
 
 **This repo's `README.md` holds the platform's canonical port map.** A new service claims
 the next free port in the 8080–8089 block and adds its row there in the same commit —

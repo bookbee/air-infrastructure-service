@@ -1,0 +1,174 @@
+# Defaults for the shared air-service chart.
+#
+# One chart deploys four services. Everything that differs between them (image,
+# port, start command, settings, secrets, replicas) is a value, set in
+# gke/values/<env>/<service>.yaml. The defaults below are the platform's
+# decisions and apply to every service: non-root, read-only root filesystem,
+# liveness on /v1/health, readiness on /v1/ready, in-cluster only, ingress
+# allowed from named namespaces.
+#
+# The Helm release name is the service name (air-rag-service, ...), and so are
+# the Deployment, the Service and the service account.
+#
+# air-model-gateway has its own chart (gke/helm/air-model-gateway): it mounts
+# routing, pricing and policy files and reads secrets as files natively.
+
+image:
+  # <region>-docker.pkg.dev/<project>/air/<service> on GKE.
+  repository: ""
+  # In CI, pass the build's digest: a digest can't be re-pointed after review.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# uat | prod | kind. A label on every resource; each service's own environment
+# setting (…__APP__ENV) is set under env.
+environment: prod
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---- the container -----------------------------------------------------------
+# The port the image listens on (its Dockerfile's EXPOSE).
+containerPort: 8080
+# The image's non-root user (its Dockerfile's useradd).
+runAsUser: 10001
+runAsGroup: 10001
+
+# The image's start command, as a list. Required when secrets.mode is not
+# `none`: see secrets below. Copy it from the service's Dockerfile
+# (ENTRYPOINT/CMD); the values files in gke/values/ already hold each one.
+command: []
+
+# Non-secret settings, as environment variables. Each service's .env.example
+# documents every one.
+env: {}
+
+# ---- secrets -----------------------------------------------------------------
+# These four services read their secrets from environment variables. The chart
+# mounts each secret as a FILE named like the variable it stands in for, and
+# starts the container through a three-line shell wrapper that exports every
+# file as that variable and then `exec`s `command`. So a secret never appears
+# in a manifest, a ConfigMap or `kubectl describe`, and the same mechanism
+# works with Secret Manager on GKE and a plain Secret on kind.
+#
+# Read at start: after changing a secret, `kubectl rollout restart` the
+# Deployment.
+secrets:
+  # gcpSecretManager  GKE Secret Manager add-on (CSI). UAT and production.
+  # kubernetesSecret  an existing Kubernetes Secret, one key per setting. kind.
+  # none              settings come from env only.
+  mode: gcpSecretManager
+  mountPath: /run/secrets/air
+  gcp:
+    # GCP project holding the secrets (required in this mode).
+    project: ""
+    # Setting name (= file name = environment variable) -> Secret Manager
+    # secret id. Must match the `secrets` map of the service's module in
+    # gke/terraform/environments/<env>/main.tf, which creates the secrets and
+    # grants this release's service account access. A listed secret must have
+    # at least one version or the pod won't start.
+    items: {}
+  kubernetesSecret:
+    name: ""
+
+# Extra volumes and mounts, in Kubernetes syntax. Used for air-rag-service's
+# documents and air-classifier-service's Tier 1 model.
+extraVolumes: []
+extraVolumeMounts: []
+
+# ---- identity ----------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ---- serving -----------------------------------------------------------------
+service:
+  # In-cluster only: callers use http://<release>.<namespace>.svc.cluster.local.
+  # This chart creates no Ingress. Exposing air-orchestrator-service to clients
+  # is the platform's ingress decision (docs/03-gke-runbook.md).
+  type: ClusterIP
+  port: 80
+
+# Ignored while autoscaling is enabled.
+replicaCount: 1
+
+# RollingUpdate keeps capacity during a rollout. Recreate stops the old pod
+# before starting the new one: for a service that must never run as two copies
+# (air-orchestrator-service, while its sessions are in process memory).
+strategy: RollingUpdate
+
+# On SIGTERM: preStop waits for the endpoint removal to propagate, then the
+# process gets the signal. Keep terminationGracePeriodSeconds above
+# preStopSleepSeconds plus the service's own drain time.
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+resources:
+  # Starting points, not measurements. Autopilot bills requests and sets limits
+  # equal to them, so keep the two in step.
+  requests:
+    cpu: 250m
+    memory: 512Mi
+    ephemeral-storage: 256Mi
+  limits:
+    memory: 512Mi
+    ephemeral-storage: 256Mi
+
+probes:
+  # /v1/health is liveness only on every AIR service: it never touches a
+  # dependency, so a dependency outage can't make Kubernetes restart healthy
+  # pods. /v1/ready is each service's own statement that it can serve.
+  startup: {path: /v1/health, periodSeconds: 2, failureThreshold: 30, timeoutSeconds: 2}
+  liveness: {path: /v1/health, periodSeconds: 15, failureThreshold: 3, timeoutSeconds: 3}
+  readiness: {path: /v1/ready, periodSeconds: 10, failureThreshold: 3, timeoutSeconds: 5}
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  # Only meaningful with two or more replicas: with one, it blocks node drains.
+  enabled: false
+  maxUnavailable: 1
+
+# Spread replicas across zones, then nodes.
+topologySpread:
+  enabled: true
+
+# The root filesystem is read-only; /tmp is a small writable emptyDir.
+tmpSizeLimit: 64Mi
+
+# ---- network -----------------------------------------------------------------
+networkPolicy:
+  # Ingress only. Pods may receive traffic from the listed namespaces (by name
+  # or label), Managed Prometheus, and this chart's own test pods; nothing
+  # else. Egress isn't restricted.
+  enabled: true
+  allowedNamespaces: []
+  allowedNamespaceLabels: {}
+  # Source address ranges, for traffic that doesn't come from a namespace: a
+  # Google Cloud load balancer reaches pods from 35.191.0.0/16 and
+  # 130.211.0.0/22 (data path and health checks).
+  allowedCidrs: []
+  # GKE Managed Prometheus collectors (Standard and Autopilot namespaces).
+  monitoringNamespaces: [gmp-system, gke-gmp-system]
+
+# ---- observability -----------------------------------------------------------
+monitoring:
+  # Google Cloud Managed Service for Prometheus scrape config (PodMonitoring
+  # CRD, present on GKE when managed collection is on). Off on clusters
+  # without it, such as kind.
+  podMonitoring:
+    enabled: true
+    interval: 30s
+    path: /metrics
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

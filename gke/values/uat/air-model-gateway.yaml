@@ -1,0 +1,43 @@
+# air-model-gateway, UAT on GKE. Same shape as production, smaller. Layered on
+# gke/helm/air-model-gateway/values.yaml.
+#
+# Placeholders in <angle brackets> come from `terraform output` in
+# gke/terraform/environments/uat, or are passed by `make gke-deploy`
+# (IMAGE_REPOSITORY, GCP_PROJECT). The image is set by CI.
+
+# The gateway's own name for its pre-production environment is `staging`
+# (AIR_MODEL_GATEWAY_ENVIRONMENT, /v1/capabilities, deploy/policy/policy.staging.yaml
+# in its repository). UAT is deployed with that value.
+environment: staging
+
+image:
+  repository: <region>-docker.pkg.dev/<project>/air/air-model-gateway
+
+modelServers:
+  ollamaBaseUrl: http://ollama.air-model-servers.svc.cluster.local:11434
+  selfHostedBaseUrl: http://llama-cpp.air-model-servers.svc.cluster.local:8181/v1
+
+redis:
+  # Own prefix, so UAT can share an instance with another environment
+  # without sharing cache entries or rate-limit buckets.
+  keyPrefix: "air-model-gateway-uat:"
+  tls:
+    enabled: true
+    gcpSecret: air-model-gateway-redis-ca
+
+secrets:
+  mode: gcpSecretManager
+  gcp:
+    project: <project>
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4
+
+networkPolicy:
+  allowedNamespaces:
+    - air-classifier-service
+    - air-orchestrator-service
+    - air-web-console
+    - air-tools
+    - air-rag-service

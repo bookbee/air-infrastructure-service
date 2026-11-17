@@ -1,0 +1,50 @@
+# air-tools-gateway on a local kind cluster (`make kind-up`). Applied ON TOP of
+# gke/values/prod/air-tools-gateway.yaml, so everything not listed here is production's:
+# the start command, settings, replicas, probes, security context and
+# NetworkPolicy. Only what kind can't provide differs:
+#   - the image is built locally and loaded into the cluster,
+#   - secrets come from a Kubernetes Secret (no Secret Manager CSI driver),
+#   - no Managed Prometheus (no PodMonitoring CRD),
+#   - laptop-sized resources.
+
+environment: kind
+
+image:
+  repository: air-tools-gateway
+  tag: local
+  pullPolicy: Never
+
+secrets:
+  mode: kubernetesSecret
+  gcp:
+    project: ""
+  kubernetesSecret:
+    name: air-tools-gateway-secrets
+
+env:
+  AIR_TOOLS_GATEWAY__STORE__KEY_PREFIX: airtg-kind
+  # Node trusts the stand-in's CA through its own setting; the rediss:// URL
+  # is in the Secret.
+  NODE_EXTRA_CA_CERTS: /etc/air/redis-ca/ca.pem
+
+# The TLS Redis stand-in's CA (gke/kind/redis-tls.yaml), as Memorystore's would
+# be mounted on GKE.
+extraVolumes:
+  - name: redis-ca
+    secret:
+      secretName: redis-ca
+      defaultMode: 0440
+extraVolumeMounts:
+  - {name: redis-ca, mountPath: /etc/air/redis-ca, readOnly: true}
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 128Mi}
+  limits: {memory: 256Mi, ephemeral-storage: 256Mi}
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 3
+
+monitoring:
+  podMonitoring:
+    enabled: false

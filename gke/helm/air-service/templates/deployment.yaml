@@ -1,0 +1,172 @@
+{{- include "air.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "air.fullname" . }}
+  labels:
+    {{- include "air.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: {{ .Values.strategy }}
+    {{- if eq .Values.strategy "RollingUpdate" }}
+    rollingUpdate:
+      # Never drop below the current capacity during a rollout.
+      maxUnavailable: 0
+      maxSurge: 1
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "air.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "air.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Settings are read at start: a change to them must roll the pods.
+        checksum/env: {{ toJson .Values.env | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "air.serviceAccountName" . }}
+      # No AIR service calls the Kubernetes API.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.runAsUser }}
+        runAsGroup: {{ .Values.runAsGroup }}
+        fsGroup: {{ .Values.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "air.selectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "air.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: service
+          image: {{ include "air.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if ne .Values.secrets.mode "none" }}
+          # Each file in the secrets directory is named like the environment
+          # variable it stands in for. Export them, then become the service:
+          # `exec` keeps the service as PID 1, so it receives SIGTERM itself.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              for f in "$AIR_SECRETS_DIR"/*; do
+                [ -f "$f" ] || continue
+                export "$(basename "$f")=$(cat "$f")"
+              done
+              exec "$@"
+            - secrets-wrapper
+            {{- range .Values.command }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- else if .Values.command }}
+          command:
+            {{- range .Values.command }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          env:
+            {{- if ne .Values.secrets.mode "none" }}
+            - name: AIR_SECRETS_DIR
+              value: {{ .Values.secrets.mountPath | quote }}
+            {{- end }}
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.preStopSleepSeconds }}"]
+          startupProbe:
+            httpGet: {path: {{ .Values.probes.startup.path }}, port: http}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+          livenessProbe:
+            httpGet: {path: {{ .Values.probes.liveness.path }}, port: http}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+          readinessProbe:
+            httpGet: {path: {{ .Values.probes.readiness.path }}, port: http}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if ne .Values.secrets.mode "none" }}
+            - name: secrets
+              mountPath: {{ .Values.secrets.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpSizeLimit }}
+        {{- if eq .Values.secrets.mode "gcpSecretManager" }}
+        - name: secrets
+          csi:
+            driver: secrets-store-gke.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "air.fullname" . }}-secrets
+        {{- else if eq .Values.secrets.mode "kubernetesSecret" }}
+        - name: secrets
+          secret:
+            secretName: {{ .Values.secrets.kubernetesSecret.name }}
+            defaultMode: 0440
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

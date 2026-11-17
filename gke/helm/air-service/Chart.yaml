@@ -1,0 +1,11 @@
+apiVersion: v2
+name: air-service
+description: Shared chart for the AIR platform's HTTP services (air-classifier-service, air-rag-service, air-tools-gateway, air-orchestrator-service). One values file per service per environment.
+type: application
+# Chart version: bump on any template or default-values change.
+version: 0.1.0
+# Not a product version: every release sets its own image tag or digest.
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/bookbee/air-infrastructure-service
+keywords: [air-platform]

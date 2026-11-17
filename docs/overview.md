@@ -31,8 +31,14 @@ that shape closely enough that the credential-broker *pattern* consumers code
 against doesn't change between local and prod — but the process itself never
 runs in prod.
 
-Model inference lives in [`air-llm`](../../air-llm), which *is* meant to run in
-every environment, including production. See that repo's own `docs/overview.md`.
+Model access lives in [air-model-gateway](../../air-model-gateway) (`air-llm` in
+older documents), which *is* meant to run in every environment, including
+production. See that repository's own `docs/overview.md`.
+
+For what replaces this stack in GCP, see [`02-gcp-deployment.md`](02-gcp-deployment.md).
+The code that deploys the five core services there lives in this repository too, under
+[`gke/`](../gke/README.md), with [`03-gke-runbook.md`](03-gke-runbook.md) as its
+procedure. It is separate from the service this document describes.
 
 ---
 
@@ -71,8 +77,8 @@ not arrive with an interpreter version and a dependency tree to keep patched.
 - **Not production infrastructure.** No prod deployment target, no SLA, no
   on-call rotation. DevOps owns the real Redis/Postgres/Mongo/observability
   that `air-*` services talk to outside a laptop.
-- **Not the model gateway.** That's `air-llm`, a separate, independently
-  deployed service.
+- **Not the model gateway.** That's air-model-gateway (formerly `air-llm`), a
+  separate, independently deployed service.
 
 ---
 
@@ -169,7 +175,8 @@ air-infrastructure-service/
 ├── client/                             # the Go SDK consumers import
 ├── deploy/                             # redis, postgres, mongo, prometheus, policy
 ├── scripts/doctor.sh
-└── docs/{01-setup.md,overview.md}
+├── gke/                                # cloud deployment of the five core services (not this one)
+└── docs/{01-setup.md,02-gcp-deployment.md,03-gke-runbook.md,overview.md}
 ```
 
 `internal/` for everything the platform does not import; `client/` is the only

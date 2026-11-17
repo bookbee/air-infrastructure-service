@@ -1,0 +1,39 @@
+# `helm test <release>`: the Service answers, and liveness and readiness pass.
+# busybox, because the four images don't share an interpreter.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "air.fullname" . }}-test-ready
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: ready
+      image: busybox:1.36
+      command:
+        - sh
+        - -ec
+        - |
+          base="http://{{ include "air.fullname" . }}:{{ .Values.service.port }}"
+          for path in /v1/health /v1/ready; do
+            echo "$path"; wget -q -T 10 -O - "$base$path"; echo
+          done
+      resources:
+        requests: {cpu: 50m, memory: 32Mi}
+        limits: {memory: 32Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]

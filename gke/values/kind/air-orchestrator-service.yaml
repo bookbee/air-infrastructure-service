@@ -1,0 +1,33 @@
+# air-orchestrator-service on a local kind cluster (`make kind-up`). Applied ON TOP of
+# gke/values/prod/air-orchestrator-service.yaml, so everything not listed here is production's:
+# the start command, settings, replicas, probes, security context and
+# NetworkPolicy. Only what kind can't provide differs:
+#   - the image is built locally and loaded into the cluster,
+#   - secrets come from a Kubernetes Secret (no Secret Manager CSI driver),
+#   - no Managed Prometheus (no PodMonitoring CRD),
+#   - laptop-sized resources.
+
+environment: kind
+
+image:
+  repository: air-orchestrator-service
+  tag: local
+  pullPolicy: Never
+
+secrets:
+  mode: kubernetesSecret
+  gcp:
+    project: ""
+  kubernetesSecret:
+    name: air-orchestrator-service-secrets
+
+env:
+  AIR_ORCHESTRATOR_SERVICE__PROMPTS__PERSONA__BRAND_NAME: Brightcart
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 128Mi}
+  limits: {memory: 512Mi, ephemeral-storage: 256Mi}
+
+monitoring:
+  podMonitoring:
+    enabled: false

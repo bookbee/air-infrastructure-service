@@ -1,0 +1,42 @@
+# air-rag-service on a local kind cluster (`make kind-up`). Applied ON TOP of
+# gke/values/prod/air-rag-service.yaml, so everything not listed here is production's:
+# the start command, settings, replicas, probes, security context and
+# NetworkPolicy. Only what kind can't provide differs:
+#   - the image is built locally and loaded into the cluster,
+#   - secrets come from a Kubernetes Secret (no Secret Manager CSI driver),
+#   - no Managed Prometheus (no PodMonitoring CRD),
+#   - laptop-sized resources.
+
+environment: kind
+
+image:
+  repository: air-rag-service
+  tag: local
+  pullPolicy: Never
+
+secrets:
+  mode: kubernetesSecret
+  gcp:
+    project: ""
+  kubernetesSecret:
+    name: air-rag-service-secrets
+
+env:
+  # The sample corpus from the air-rag-service repository, loaded into a
+  # ConfigMap by up-services.sh.
+  AIR_RAG_SERVICE__INGESTION__SEED_DIR: /var/air/documents
+
+extraVolumes:
+  - name: documents
+    configMap:
+      name: air-rag-documents
+extraVolumeMounts:
+  - {name: documents, mountPath: /var/air/documents, readOnly: true}
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 128Mi}
+  limits: {memory: 512Mi, ephemeral-storage: 256Mi}
+
+monitoring:
+  podMonitoring:
+    enabled: false

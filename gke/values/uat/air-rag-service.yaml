@@ -1,0 +1,58 @@
+# air-rag-service, UAT on GKE. Layered on gke/helm/air-service/values.yaml.
+#
+# Placeholders in <angle brackets> come from `terraform output` in
+# gke/terraform/environments/uat, or are passed by `make gke-deploy`
+# (IMAGE_REPOSITORY, GCP_PROJECT). The image is set by CI or by
+# `make deploy DEPLOY_ENV=uat` in the air-rag-service repository.
+#
+# Settings: every variable is documented in that repository's .env.example.
+# Only what must differ from its defaults is set here.
+
+environment: uat
+
+image:
+  repository: <region>-docker.pkg.dev/<project>/air/air-rag-service
+
+containerPort: 8080
+command: [uvicorn, "air_rag_service.main:app", --host, 0.0.0.0, --port, "8080"]
+
+env:
+  AIR_RAG_SERVICE__APP__ENV: staging
+  AIR_RAG_SERVICE__APP__DOCS_ENABLED: "true"
+  AIR_RAG_SERVICE__OBS__LOG_FORMAT: json
+  AIR_RAG_SERVICE__MODEL_GATEWAY__BASE_URL: http://air-model-gateway.air-model-gateway.svc.cluster.local
+  # The directory of documents indexed at start-up. Uncomment together with
+  # the volume below. Without it the index is empty and every search returns
+  # no sources.
+  # AIR_RAG_SERVICE__INGESTION__SEED_DIR: /var/air/documents
+
+secrets:
+  mode: gcpSecretManager
+  gcp:
+    project: <project>
+    # Setting -> Secret Manager secret id. The same map is in
+    # gke/terraform/environments/<env>/main.tf, which creates the secrets.
+    items:
+      AIR_RAG_SERVICE__SECURITY__HASH_SALT: air-rag-service-hash-salt
+      AIR_RAG_SERVICE__SECURITY__API_KEYS_INLINE: air-rag-service-api-keys
+      AIR_RAG_SERVICE__MODEL_GATEWAY__API_KEY: air-rag-service-model-gateway-token
+
+# The knowledge base: *.md / *.txt files with front matter (tenant, status,
+# title, uri, kind), mounted read-only. A ConfigMap suits a small set; use a
+# PersistentVolumeClaim or the Cloud Storage FUSE CSI driver for a real one.
+# extraVolumes:
+#   - name: documents
+#     configMap: {name: air-rag-documents}
+# extraVolumeMounts:
+#   - {name: documents, mountPath: /var/air/documents, readOnly: true}
+
+# The index lives in process memory: every replica embeds the whole document
+# set through air-model-gateway before it starts serving. One replica, no
+# autoscaling, and a start-up allowance of five minutes.
+replicaCount: 1
+probes:
+  startup: {path: /v1/health, periodSeconds: 2, failureThreshold: 150, timeoutSeconds: 2}
+
+networkPolicy:
+  allowedNamespaces:
+    - air-orchestrator-service

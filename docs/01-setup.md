@@ -17,10 +17,14 @@ service itself — running it needs nothing but Docker.
 ```bash
 git clone https://github.com/bookbee/air-infrastructure-service.git
 cd air-infrastructure-service
-make env      # writes .env from .env.example — no edits needed
+make env      # writes .env from .env.example — no edits needed; do it before `make up`
 make up       # redis, postgres, pgbouncer, mongo, and this service on :8080
 make doctor   # every check should be green
 ```
+
+Bringing up the whole platform, not just this stack? air-web-console's
+[local setup guide](../../air-web-console/docs/platform/03-local-setup.md) does all
+seven repositories in order with one command.
 
 `make doctor` is the one to trust. It verifies the daemon, the `air-net`
 network, all four stores, this service's liveness and readiness, that it
@@ -82,8 +86,8 @@ networks:
 loudly ("network air-net not found") instead of coming up healthy and timing
 out on every call.
 
-`air-llm` is the exception — its own stack on its own network, reached over
-`host.docker.internal:8083`.
+air-model-gateway (`air-llm` in older documents) is the exception: its own stack
+on its own network, reached over `host.docker.internal:8083`.
 
 ### Getting a token for a new service
 
@@ -110,6 +114,15 @@ in the same commit, so one file stays the answer to "what is already taken".
 This stack owns that network and must be up first: `make up` here. The failure
 is deliberately loud — a sibling that started without it would come up healthy
 and then time out on every call.
+
+**`/v1/ready` shows every store `"down"`, and every call is a 401.**
+The service was started without a `.env`, so it has no tokens and looks for the
+stores on `localhost` inside its own container. `make env && make up` fixes it
+(air-web-console bug IN-001).
+
+**`make up-observability` fails on port 3000.**
+Grafana publishes host port 3000, which air-web-console also uses. Stop the console,
+or run it on another port (`make dev PORT=3001` in that repository).
 
 **Port 8080 already in use.**
 Something else claimed the broker's slot. `docker ps --filter publish=8080`, or

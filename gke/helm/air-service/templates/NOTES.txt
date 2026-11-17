@@ -1,0 +1,15 @@
+{{ include "air.fullname" . }} ({{ .Values.environment }}) is deployed in {{ .Release.Namespace }}.
+
+Callers in this cluster use:
+  http://{{ include "air.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local{{ if ne (int .Values.service.port) 80 }}:{{ .Values.service.port }}{{ end }}
+
+with an API key in X-API-Key.
+{{- if .Values.networkPolicy.enabled }}
+Their namespace must be listed in networkPolicy.allowedNamespaces.
+{{- end }}
+
+Check it:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+After changing a secret:
+  kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "air.fullname" . }}

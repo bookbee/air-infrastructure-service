@@ -1,0 +1,79 @@
+# air-orchestrator-service, production on GKE. Layered on gke/helm/air-service/values.yaml.
+#
+# Placeholders in <angle brackets> come from `terraform output` in
+# gke/terraform/environments/prod, or are passed by `make gke-deploy`
+# (IMAGE_REPOSITORY, GCP_PROJECT). The image is set by CI or by
+# `make deploy DEPLOY_ENV=prod` in the air-orchestrator-service repository.
+#
+# Settings: every variable is documented in that repository's .env.example.
+# Only what must differ from its defaults is set here.
+
+environment: prod
+
+image:
+  repository: <region>-docker.pkg.dev/<project>/air/air-orchestrator-service
+
+# This image listens on 8081, not 8080.
+containerPort: 8081
+command: [air-orchestrator-service]
+
+env:
+  AIR_ORCHESTRATOR_SERVICE__APP__ENV: production
+  AIR_ORCHESTRATOR_SERVICE__APP__HOST: 0.0.0.0
+  AIR_ORCHESTRATOR_SERVICE__APP__PORT: "8081"
+  AIR_ORCHESTRATOR_SERVICE__APP__WORKERS: "1"
+  AIR_ORCHESTRATOR_SERVICE__OBS__LOG_FORMAT: json
+  # The model gateway: required for any answer.
+  AIR_ORCHESTRATOR_SERVICE__MODEL_GATEWAY__BASE_URL: http://air-model-gateway.air-model-gateway.svc.cluster.local
+  AIR_ORCHESTRATOR_SERVICE__MODEL_GATEWAY__MODEL_CLASS: cloud
+  # The planner decides order lookups and proposed changes.
+  AIR_ORCHESTRATOR_SERVICE__PLANNER__ENABLED: "true"
+  AIR_ORCHESTRATOR_SERVICE__PLANNER__MODEL_CLASS: cloud
+  # The optional services, all switched on. Their keys are secrets, below.
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__CLASSIFIER__ENABLED: "true"
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__CLASSIFIER__BASE_URL: http://air-classifier-service.air-classifier-service.svc.cluster.local
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__RAG__ENABLED: "true"
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__RAG__BASE_URL: http://air-rag-service.air-rag-service.svc.cluster.local
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__TOOLS_GATEWAY__ENABLED: "true"
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__TOOLS_GATEWAY__BASE_URL: http://air-tools-gateway.air-tools-gateway.svc.cluster.local
+  AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__TOOLS_GATEWAY__ALLOW__CUSTOMER: '["orders.*"]'
+  # Set per environment:
+  #   the shop's name, used by the assistant (the default is "AIR")
+  # AIR_ORCHESTRATOR_SERVICE__PROMPTS__PERSONA__BRAND_NAME: "<shop name>"
+  #   the PUBLIC keys of whoever signs customer tokens (the shop's backend), as
+  #   the JSON list .env.example shows. Without it every customer is anonymous
+  #   and no per-customer lookup or change is offered.
+  # AIR_ORCHESTRATOR_SERVICE__SECURITY__CUSTOMER_TOKENS: '[{"issuer":"…","tenant":"…","kid":"…","alg":"ES256","public_key":"-----BEGIN PUBLIC KEY-----\\n…"}]'
+
+secrets:
+  mode: gcpSecretManager
+  gcp:
+    project: <project>
+    # Setting -> Secret Manager secret id. The same map is in
+    # gke/terraform/environments/<env>/main.tf, which creates the secrets.
+    items:
+      AIR_ORCHESTRATOR_SERVICE__SECURITY__HASH_SALT: air-orchestrator-service-hash-salt
+      AIR_ORCHESTRATOR_SERVICE__SECURITY__API_KEYS_INLINE: air-orchestrator-service-api-keys
+      AIR_ORCHESTRATOR_SERVICE__MODEL_GATEWAY__API_KEY: air-orchestrator-service-model-gateway-token
+      AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__CLASSIFIER__API_KEY: air-orchestrator-service-classifier-api-key
+      AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__RAG__API_KEY: air-orchestrator-service-rag-api-key
+      AIR_ORCHESTRATOR_SERVICE__DOWNSTREAM__TOOLS_GATEWAY__TENANT_KEYS: air-orchestrator-service-tools-tenant-keys
+
+# EXACTLY ONE COPY. Sessions and pending proposals live in process memory
+# (durable sessions are not built), so a second replica answers about half of
+# all follow-up messages with a 404. Recreate stops the old pod before the new
+# one starts: every deploy drops the conversations in progress. Do not enable
+# autoscaling or raise replicaCount until durable sessions exist.
+replicaCount: 1
+strategy: Recreate
+
+resources:
+  requests: {cpu: 500m, memory: 512Mi, ephemeral-storage: 256Mi}
+  limits: {memory: 512Mi, ephemeral-storage: 256Mi}
+
+networkPolicy:
+  # The only service clients reach from outside the cluster. Nothing is allowed
+  # in until the platform's ingress is decided: list the ingress controller's
+  # namespace, or the load balancer's source ranges, here.
+  allowedNamespaces: []
+  # allowedCidrs: ["35.191.0.0/16", "130.211.0.0/22"]   # Google Cloud load balancers

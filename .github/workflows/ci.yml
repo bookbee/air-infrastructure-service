@@ -1,0 +1,53 @@
+name: CI
+
+# Two gates, the same commands as on a laptop:
+#   make check         the Go service (lint, vet, tests)
+#   make gke-validate  the deployment code for all five core services
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make check
+      - run: docker build -t air-infrastructure-service:ci .
+
+  deploy-config:
+    # Chart lint, schema validation of every service's manifests for every
+    # environment, Terraform validation, shellcheck.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: air-infrastructure-service
+      # The gateway's chart is rendered with the gateway's own routing, pricing
+      # and policy files, which stay in its repository. If that repository is
+      # private, INFRA_CI_TOKEN is a token that can read it.
+      - uses: actions/checkout@v4
+        with:
+          repository: bookbee/air-model-gateway
+          path: air-model-gateway
+          token: ${{ secrets.INFRA_CI_TOKEN || github.token }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+          terraform_wrapper: false
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+      - run: make gke-validate
+        working-directory: air-infrastructure-service

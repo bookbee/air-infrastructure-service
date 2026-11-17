@@ -20,6 +20,7 @@ help: ## Show this help
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo
 	@echo "Overridable: HOST=$(HOST) PORT=$(PORT)"
+	@echo "GKE targets: SERVICE=<one of the five core services> DEPLOY_ENV=uat|prod (docs/03-gke-runbook.md)"
 
 .PHONY: env
 env: ## Create .env from .env.example if it does not exist
@@ -143,3 +144,70 @@ check: lint vet test ## Lint + vet + test  ← run before calling work done
 .PHONY: clean
 clean: ## Remove build output and coverage artifacts
 	rm -rf bin coverage.out
+
+# ---- GKE: UAT and production for the five core services ---------------------
+# Everything DevOps deploys is under gke/: two Helm charts (air-model-gateway's
+# own, and the shared air-service chart for the other four), one values file per
+# service per environment, Terraform for the GCP resources, and the scripts.
+# docs/03-gke-runbook.md is the runbook; gke/README.md is the map.
+#
+# Each core repository builds and pushes its own image, then calls these
+# targets through its own `make deploy DEPLOY_ENV=uat|prod`.
+#
+#   SERVICE       air-model-gateway | air-classifier-service | air-rag-service |
+#                 air-tools-gateway | air-orchestrator-service
+#   DEPLOY_ENV    uat | prod
+#   KUBE_CONTEXT  required by gke-deploy / gke-smoke; never defaulted, so a
+#                 deploy can't land on whatever cluster kubectl points at
+#   IMAGE_REPOSITORY, IMAGE_DIGEST (or IMAGE_TAG), GCP_PROJECT
+#                 replace the <placeholders> in gke/values/<env>/<service>.yaml
+#   GATEWAY_DIR   the air-model-gateway checkout: its routing, pricing and
+#                 policy files are passed to the gateway's chart from there
+DEPLOY_ENV  ?= uat
+GATEWAY_DIR ?= ../air-model-gateway
+KIND_CONTEXT := kind-air-platform
+GKE_ENVVARS  = GATEWAY_DIR="$(abspath $(GATEWAY_DIR))" KUBE_CONTEXT="$(KUBE_CONTEXT)" \
+	IMAGE_REPOSITORY="$(IMAGE_REPOSITORY)" IMAGE_DIGEST="$(IMAGE_DIGEST)" IMAGE_TAG="$(IMAGE_TAG)" \
+	GCP_PROJECT="$(GCP_PROJECT)"
+
+.PHONY: gke-require-service
+gke-require-service:
+	@test -n "$(SERVICE)" || { echo "set SERVICE, e.g. SERVICE=air-rag-service (see 'make help')"; exit 1; }
+
+.PHONY: gke-validate
+gke-validate: ## Lint both charts, schema-check every service and environment, validate Terraform, shellcheck
+	@GATEWAY_DIR="$(abspath $(GATEWAY_DIR))" gke/scripts/validate.sh
+
+.PHONY: gke-render
+gke-render: gke-require-service ## Print the manifests for SERVICE in DEPLOY_ENV (SAMPLE=1 fills the placeholders)
+	@$(GKE_ENVVARS) SAMPLE="$(SAMPLE)" gke/scripts/release.sh render $(SERVICE) $(DEPLOY_ENV)
+
+.PHONY: gke-deploy
+gke-deploy: gke-require-service ## helm upgrade --install SERVICE for DEPLOY_ENV into KUBE_CONTEXT
+	@$(GKE_ENVVARS) gke/scripts/release.sh deploy $(SERVICE) $(DEPLOY_ENV)
+
+.PHONY: gke-smoke
+gke-smoke: gke-require-service ## Smoke-test SERVICE in KUBE_CONTEXT (gateway: tokens from GCP_PROJECT; others: KEYS_FILE optional)
+	@test -n "$(KUBE_CONTEXT)" || { echo "set KUBE_CONTEXT"; exit 1; }
+	@if [ "$(SERVICE)" = air-model-gateway ]; then \
+		test -n "$(GCP_PROJECT)$(TOKENS_FILE)" || { echo "set GCP_PROJECT (or TOKENS_FILE)"; exit 1; }; \
+		KUBE_CONTEXT="$(KUBE_CONTEXT)" GCP_PROJECT="$(GCP_PROJECT)" TOKENS_FILE="$(TOKENS_FILE)" \
+			EXPECT_ENVIRONMENT=$(if $(filter uat,$(DEPLOY_ENV)),staging,prod) gke/scripts/smoke-gateway.sh; \
+	else \
+		KUBE_CONTEXT="$(KUBE_CONTEXT)" SERVICES="$(SERVICE)" KEYS_FILE="$(KEYS_FILE)" \
+			EXPECT_CITATIONS="$(EXPECT_CITATIONS)" gke/scripts/smoke-services.sh; \
+	fi
+
+.PHONY: kind-up
+kind-up: ## All five services on a local kind cluster, with the production charts and values
+	@GATEWAY_DIR="$(abspath $(GATEWAY_DIR))" gke/kind/up-gateway.sh
+	@gke/kind/up-services.sh
+
+.PHONY: kind-test
+kind-test: ## Smoke-test the kind deployment: the gateway, its NetworkPolicy, and the four services end to end
+	@KUBE_CONTEXT=$(KIND_CONTEXT) TOKENS_FILE=gke/kind/.state/tokens.env gke/scripts/smoke-gateway.sh
+	@KUBE_CONTEXT=$(KIND_CONTEXT) KEYS_FILE=gke/kind/.state/services.env EXPECT_CITATIONS=true gke/scripts/smoke-services.sh
+
+.PHONY: kind-down
+kind-down: ## Delete the kind cluster (keeps gke/kind/.state)
+	kind delete cluster --name air-platform

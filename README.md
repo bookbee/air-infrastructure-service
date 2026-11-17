@@ -1,29 +1,50 @@
 # air-infrastructure-service
 
-Local dev infrastructure for the AIR platform: a shared docker-compose stack
-(Redis, Postgres, MongoDB) plus a small control-plane API that brokers scoped
-credentials to those stores. It exists so every AIR service dev-time resolves
-against the same instances instead of standing up its own.
+The AIR platform's infrastructure repository, owned by DevOps. It holds two separate
+things:
 
-- Setting up, and using it from your service →
-  **[`docs/01-setup.md`](docs/01-setup.md)**
-- Architecture, design decisions, gaps, roadmap →
-  [`docs/overview.md`](docs/overview.md)
+1. **The local development stack**: one Docker Compose stack (Redis, Postgres,
+   MongoDB) that every AIR service shares on a developer's machine, plus a small Go
+   service that hands out scoped credentials to those stores. Local only.
+2. **The cloud deployment code**, in [`gke/`](gke/README.md): the Helm charts,
+   Terraform and scripts that deploy the five core services (air-model-gateway,
+   air-classifier-service, air-rag-service, air-tools-gateway,
+   air-orchestrator-service) to UAT and production on GKE.
 
-This repo is **local-only**. In deployed environments, DevOps provides Redis,
-Postgres, Mongo, and observability directly — this service does not run there.
+> **Part of the AIR platform.** New here? Start with the
+> [platform overview](../air-web-console/docs/platform/01-overview.md) and the
+> [local setup guide](../air-web-console/docs/platform/03-local-setup.md) in
+> air-web-console, which bring up all seven repositories together.
 
-Model inference lives in [`air-llm`](../air-llm) (port `8083`, its own
-standalone compose stack); it is not part of this repo.
+| If you are… | Read |
+| --- | --- |
+| A developer who needs the shared stack running | [Quick start](#quick-start), then [`docs/01-setup.md`](docs/01-setup.md) |
+| **DevOps, deploying AIR to GCP** | **[`docs/02-gcp-deployment.md`](docs/02-gcp-deployment.md)** (what replaces the local stack in GCP and what each service needs), then **[`docs/03-gke-runbook.md`](docs/03-gke-runbook.md)** (the procedure) and [`gke/README.md`](gke/README.md) (the map of the deployment code) |
+| Changing this service | [`docs/overview.md`](docs/overview.md) (architecture, decisions, gaps), then [`CLAUDE.md`](CLAUDE.md) |
+
+The Go service and the Compose stack are **local-only**: in a deployed environment,
+managed services (Memorystore, Secret Manager) take their place and this service does
+not run. The repository is also called `air-infra` in older documents and in other
+repositories' comments.
+
+Model access is a separate service, [air-model-gateway](../air-model-gateway) (port
+`8083`, called `air-llm` in older documents). It runs its own Compose stack and is
+not part of this repository.
 
 ## Quick start
 
+Needs Docker Desktop (or Docker Engine with Compose v2), running.
+
 ```bash
-make env            # .env from .env.example
+make env            # .env from .env.example — do this first
 make up             # redis, postgres, pgbouncer, mongo, this service
 make doctor         # verify the stack is serving what sibling services expect
 curl localhost:8080/v1/health
 ```
+
+**Run `make env` before `make up`.** Without a `.env` the service starts, but with
+no service tokens and the wrong store addresses: every call is a 401 and `/v1/ready`
+reports every store `down` (air-web-console bug IN-001). `make doctor` catches it.
 
 Optional add-ons: `make up-tools` (adminer / mongo-express / redisinsight),
 `make up-observability` (prometheus / grafana). `make help` lists every target.
@@ -108,31 +129,50 @@ works too: everything here publishes its port on the host, so
 
 **This table is the platform's canonical port map.** Every AIR service is
 expected to run at once on one laptop, so host ports are allocated here rather
-than defaulted per repo — including for services (like `air-llm`) that don't
-join this stack.
+than defaulted per repository, including for air-model-gateway, which doesn't
+join this stack. These are **host** ports: inside its container every service
+listens on 8080, except the orchestrator (8081) and the console (3000).
 
 | Port | Owner | Notes |
 |---|---|---|
-| 8080 | **air-infrastructure-service** | Broker / control plane (this repo) |
-| 8081 | air-orchestrator-service | Conversational API |
-| 8082 | air-classifier-service | `/v1/sentiment`, `/v1/feedback`, `/v1/reviews` |
-| 8083 | air-llm | Model gateway — standalone, own compose stack, reached directly |
-| 8084 | air-tools | |
-| 8085 | air-action | Not yet built |
-| 8086 | air-recommender | Not yet built |
-| 8087 | air-rag-service | |
-| 8088 | air-adapter | ECP adapter (Node) |
-| 8501 | air-client | Streamlit console |
+| 8080 | **air-infrastructure-service** | Credential broker (this repository) |
+| 8081 | air-orchestrator-service | The conversational API: `/v1/chat`, `/v1/query` |
+| 8082 | air-classifier-service | `/v1/classify`, `/v1/classify/batch`, `/v1/summary/refresh` |
+| 8083 | air-model-gateway | The model gateway: `/v1/generate`, `/v1/embed`. Own Compose stack, reached over the host |
+| 8084 | air-tools-gateway | `/v1/tools/{name}`, `/v1/actions/{name}/propose` and `/execute` |
+| 8085 | (reserved) | `air-action` was merged into air-tools-gateway and will not be built |
+| 8086 | (reserved) | `air-recommender`, not started |
+| 8087 | air-rag-service | `/v1/retrieve` |
+| 3000 | air-web-console | The test console. **Also Grafana's port below**: don't run both, or start the console with `make dev PORT=3001` |
 | 8090 / 8091 / 8092 | adminer / mongo-express / redisinsight | `make up-tools` |
 | 9090 / 3000 | prometheus / grafana | `make up-observability` |
-| 6379 / 5432 / 6432 / 27017 | redis / postgres / pgbouncer / mongo | Native ports |
+| 6379 / 6432 / 27017 | redis / pgbouncer / mongo | Published on the host. Postgres itself (5432) is reachable only through pgbouncer |
+| 11434 | Ollama | Not part of this stack: the local models, run natively on the host for air-model-gateway |
 
 A new service claims the next free port in the block and adds a row here in
 the same commit. Each service's port is overridable (`make run PORT=…`).
 
 Metrics work the same way: a service exposes `/metrics` and registers a
 scrape target in [`deploy/prometheus/prometheus.yml`](deploy/prometheus/prometheus.yml),
-rather than shipping a Prometheus of its own.
+rather than shipping a Prometheus of its own. **Today that file scrapes only this
+service and the classifier**; the other four services expose `/metrics` and still
+need their jobs added (air-web-console bug IN-002).
+
+### Who uses what today
+
+| Store | Used by | For |
+|---|---|---|
+| Redis | air-classifier-service | Verdict cache, idempotency |
+| Redis | air-tools-gateway | Proposals, idempotency records, locks (keys under `airtg:`) |
+| Redis | air-model-gateway, only with `REDIS=infra` | Shared cache, rate limits, spend |
+| MongoDB | air-classifier-service, only with `AUDIT__BACKEND=mongo` | Optional audit log |
+| Postgres | nothing yet | Reserved for later phases |
+| The broker API | air-orchestrator-service | A health probe only |
+
+The services above reach Redis with the address and password in their own Compose
+files. None of them fetches credentials from the broker yet: the broker is in place
+for when they do. That is why its token and policy names (`air-classifier`,
+`air-platform`, `air-client`) still carry the services' earlier names.
 
 ## Consuming it
 
@@ -188,6 +228,23 @@ binary, the policy document, and nothing else — no shell, no package manager,
 no interpreter. It runs as uid 65532 and needs no writable filesystem. Two
 direct dependencies (`prometheus/client_golang`, `gopkg.in/yaml.v3`); the rest
 is the standard library.
+
+## Deploying the AIR services to GKE
+
+The deployment code for every core service is in [`gke/`](gke/README.md):
+
+```bash
+make gke-validate        # lint the charts, schema-check every manifest, validate Terraform
+make kind-up             # all five services on a local Kubernetes cluster, production values
+make kind-test           # smoke-test them, end to end
+make gke-deploy SERVICE=air-rag-service DEPLOY_ENV=uat KUBE_CONTEXT=… GCP_PROJECT=… \
+     IMAGE_REPOSITORY=… IMAGE_DIGEST=sha256:…
+```
+
+Each service's repository keeps its own `Dockerfile` and has `make image-push`,
+`make deploy` and `make deploy-smoke`, which build the image there and call the
+targets above. [`docs/03-gke-runbook.md`](docs/03-gke-runbook.md) is the full
+procedure.
 
 ## Everyday commands
 

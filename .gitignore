@@ -37,3 +37,19 @@ go.work.sum
 
 # Claude Code — personal overrides (.claude/settings.json IS committed)
 .claude/settings.local.json
+
+# GKE harness: generated tokens, keys, CA and Redis password for kind.
+gke/kind/.state/
+# Terraform: real variable values, state and plans (the *.tfvars.example files
+# and .terraform.lock.hcl are committed).
+gke/terraform/**/*.tfvars
+gke/terraform/**/*.tfvars.json
+!gke/terraform/**/*.tfvars.example
+gke/terraform/**/*.tfstate
+gke/terraform/**/*.tfstate.*
+gke/terraform/**/*.tfplan
+gke/terraform/**/override.tf
+gke/terraform/**/*_override.tf
+gke/terraform/**/crash*.log
+gke/terraform/**/.terraform/
+gke/helm/**/charts/
